@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Hold browser downloads in a quarantine folder until VirusTotal has checked them.
+
+Clean files (0 malicious, 0 suspicious) are moved to ~/Downloads automatically.
+Flagged, unknown or failed files stay in quarantine and raise a notification
+asking what to do.
+"""
+import hashlib
+import html
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import requests
+
+HOME = Path.home()
+QUARANTINE = HOME / "Downloads" / ".quarantine"
+RELEASE_DIR = HOME / "Downloads"
+KEY_FILE = HOME / ".config" / "vt-quarantine" / "api_key"
+API = "https://www.virustotal.com/api/v3"
+APP = "VirusTotal Quarantine"
+
+POLL_SECONDS = 2
+REQUESTS_PER_MINUTE = 4          # free public API limit
+DIRECT_UPLOAD_MAX = 32 * 1024**2  # larger files need an upload URL
+UPLOAD_MAX = 650 * 1024**2
+ANALYSIS_TIMEOUT = 20 * 60
+
+# Unknown files of these types are uploaded without asking; anything else
+# (documents, media, ...) asks first, since uploads are visible to VT subscribers.
+AUTO_UPLOAD_EXT = {
+    ".exe", ".msi", ".msix", ".appx", ".dll", ".scr", ".com", ".cpl", ".sys",
+    ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk",
+    ".jar", ".apk", ".appimage", ".run", ".bin", ".sh", ".py", ".pl", ".deb", ".rpm",
+    ".flatpak", ".snap", ".pkg", ".dmg", ".iso", ".img", ".cab",
+    ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".xz", ".txz", ".bz2", ".zst", ".lz4",
+}
+EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!")
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+class RateLimiter:
+    def __init__(self, per_minute):
+        self.interval = 60 / per_minute
+        self.lock = threading.Lock()
+        self.next = 0.0
+
+    def wait(self):
+        # Holding the lock while sleeping is deliberate: it serialises callers.
+        with self.lock:
+            now = time.monotonic()
+            if self.next > now:
+                time.sleep(self.next - now)
+                now = self.next
+            self.next = now + self.interval
+
+
+limiter = RateLimiter(REQUESTS_PER_MINUTE)
+session = requests.Session()
+
+
+def vt(method, url, upload=None):
+    """Rate-limited VirusTotal request; retries when the minute quota is hit."""
+    if not url.startswith("http"):
+        url = API + url
+    for _ in range(6):
+        limiter.wait()
+        if upload:
+            with open(upload, "rb") as f:
+                r = session.request(method, url, files={"file": (upload.name, f)}, timeout=600)
+        else:
+            r = session.request(method, url, timeout=60)
+        if r.status_code != 429:
+            return r
+        log("rate limited, waiting a minute")
+        time.sleep(60)
+    raise RuntimeError("VirusTotal quota exceeded (daily limit is 500 requests)")
+
+
+def notify(summary, body, urgency="normal", icon="security-medium", actions=(), expire=None):
+    """Show a notification; with actions, block until one is chosen and return its key."""
+    cmd = ["notify-send", "-a", APP, "-u", urgency, "-i", icon]
+    if expire is not None:
+        cmd += ["-t", str(expire)]
+    for key, label in actions:
+        cmd.append(f"--action={key}={label}")
+    cmd += [summary, body]
+    return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+
+
+class Progress:
+    """Non-blocking notification that stays up while a scan runs, with an
+    "Open report" button; close() removes it once there is a verdict."""
+
+    def __init__(self, summary, body, sha):
+        self.id = None
+        self.proc = subprocess.Popen(
+            ["notify-send", "-a", APP, "-u", "normal", "-i", "cloud-upload", "-t", "0", "-p",
+             "--action=report=Open report", summary, body],
+            stdout=subprocess.PIPE, text=True)
+        threading.Thread(target=self._watch, args=(sha,), daemon=True).start()
+
+    def _watch(self, sha):
+        self.id = self.proc.stdout.readline().strip()
+        for line in self.proc.stdout:
+            if line.strip() == "report":
+                subprocess.Popen(["xdg-open", f"https://www.virustotal.com/gui/file/{sha}"])
+
+    def close(self):
+        if self.proc.poll() is None and self.id:
+            subprocess.run(["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+                            "--object-path", "/org/freedesktop/Notifications",
+                            "--method", "org.freedesktop.Notifications.CloseNotification",
+                            self.id], capture_output=True)
+        self.proc.terminate()
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def wait_complete(path):
+    """Wait until the browser has finished writing; False if the file went away."""
+    part = path.with_name(path.name + ".part")
+    last = None
+    while True:
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            return False
+        sig = (st.st_size, st.st_mtime_ns)
+        if not part.exists() and sig == last:
+            return True
+        last = None if part.exists() else sig
+        time.sleep(POLL_SECONDS)
+
+
+def release(path):
+    dest = RELEASE_DIR / path.name
+    n = 1
+    while dest.exists():
+        dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
+        n += 1
+    shutil.move(path, dest)
+    log(f"released {path.name} -> {dest}")
+    return dest
+
+
+def delete(path):
+    path.unlink(missing_ok=True)
+    log(f"deleted {path.name}")
+
+
+def should_auto_upload(path):
+    if path.suffix.lower() in AUTO_UPLOAD_EXT:
+        return True
+    with open(path, "rb") as f:
+        return f.read(4).startswith(EXECUTABLE_MAGIC)
+
+
+def detection_summary(stats, results):
+    bad = stats.get("malicious", 0)
+    sus = stats.get("suspicious", 0)
+    total = sum(stats.get(k, 0) for k in ("malicious", "suspicious", "undetected", "harmless"))
+    lines = [f"<b>{bad}/{total}</b> engines say malicious" + (f", {sus} suspicious" if sus else "")]
+    flagged = [(eng, r.get("result") or r["category"]) for eng, r in (results or {}).items()
+               if r.get("category") in ("malicious", "suspicious")]
+    for eng, label in flagged[:6]:
+        lines.append(f"• {html.escape(eng)}: {html.escape(label)}")
+    if len(flagged) > 6:
+        lines.append(f"• …and {len(flagged) - 6} more")
+    return bad, sus, total, "\n".join(lines)
+
+
+class Quarantine:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = set()  # being processed
+        self.held = set()    # waiting on the user, notification dismissed
+
+    def scan(self):
+        for entry in os.scandir(QUARANTINE):
+            if entry.name.endswith(".part") or not entry.is_file(follow_symlinks=False):
+                continue
+            path = Path(entry.path)
+            with self.lock:
+                if path in self.active or path in self.held:
+                    continue
+                self.active.add(path)
+            threading.Thread(target=self.handle, args=(path,), daemon=True).start()
+        with self.lock:
+            self.held = {p for p in self.held if p.exists()}
+
+    def handle(self, path):
+        hold = False
+        try:
+            if wait_complete(path):
+                hold = self.check(path)
+        except Exception as e:
+            log(f"error on {path.name}: {e}")
+            hold = self.ask(path, None, "Scan failed",
+                            f"{html.escape(path.name)}\n{html.escape(str(e))}",
+                            "dialog-error", [("retry", "Retry")])
+        finally:
+            with self.lock:
+                self.active.discard(path)
+                if hold and path.exists():
+                    self.held.add(path)
+
+    def check(self, path):
+        """Returns True if the file was left in quarantine for the user."""
+        sha = sha256(path)
+        log(f"checking {path.name} {sha}")
+
+        progress = None
+        try:
+            deadline = time.monotonic() + ANALYSIS_TIMEOUT
+            while time.monotonic() < deadline:
+                r = vt("GET", f"/files/{sha}")
+                if r.status_code == 404:
+                    return self.unknown(path, sha)
+                r.raise_for_status()
+                attrs = r.json()["data"]["attributes"]
+                # A file still queued on VT has all-zero stats and no analysis date.
+                if attrs.get("last_analysis_date"):
+                    return self.verdict(path, sha, attrs["last_analysis_stats"],
+                                        attrs.get("last_analysis_results"))
+                if not progress:
+                    log(f"{path.name} is known to VT but not analysed yet, waiting")
+                    progress = Progress("Scanning on VirusTotal",
+                                        f"{html.escape(path.name)} stays in quarantine until "
+                                        "the scan finishes.", sha)
+                time.sleep(60)
+        finally:
+            if progress:
+                progress.close()
+        raise RuntimeError("VirusTotal has no finished analysis yet")
+
+    def unknown(self, path, sha):
+        name = html.escape(path.name)
+        size = path.stat().st_size
+        if size > UPLOAD_MAX:
+            return self.ask(path, sha, "Not on VirusTotal",
+                            f"{name} is unknown and too large to upload ({size // 1024**2} MB).",
+                            "dialog-warning")
+        if not should_auto_upload(path):
+            choice = self.ask(path, sha, "Not on VirusTotal",
+                              f"{name} is unknown to VirusTotal. Upload it for scanning? "
+                              "(Uploaded files can be downloaded by VT subscribers.)",
+                              "dialog-question", [("upload", "Upload")], report=False)
+            if choice != "upload":
+                return choice
+        progress = Progress("Scanning on VirusTotal",
+                            f"{html.escape(path.name)} stays in quarantine until the scan "
+                            "finishes (usually a few minutes).", sha)
+        try:
+            stats, results = self.upload(path)
+        finally:
+            progress.close()
+        return self.verdict(path, sha, stats, results)
+
+    def upload(self, path):
+        log(f"uploading {path.name}")
+        url = "/files"
+        if path.stat().st_size > DIRECT_UPLOAD_MAX:
+            r = vt("GET", "/files/upload_url")
+            r.raise_for_status()
+            url = r.json()["data"]
+        r = vt("POST", url, upload=path)
+        r.raise_for_status()
+        analysis = r.json()["data"]["id"]
+        log(f"uploaded {path.name}, waiting for analysis")
+        deadline = time.monotonic() + ANALYSIS_TIMEOUT
+        status = None
+        while time.monotonic() < deadline:
+            time.sleep(30)
+            r = vt("GET", f"/analyses/{analysis}")
+            r.raise_for_status()
+            attrs = r.json()["data"]["attributes"]
+            if attrs["status"] != status:
+                status = attrs["status"]
+                log(f"analysis of {path.name}: {status}")
+            if attrs["status"] == "completed":
+                return attrs["stats"], attrs.get("results")
+        raise RuntimeError("VirusTotal analysis timed out")
+
+    def verdict(self, path, sha, stats, results):
+        bad, sus, total, body = detection_summary(stats, results)
+        if total == 0:
+            return self.ask(path, sha, "No engines could scan this file",
+                            f"{html.escape(path.name)} got no verdict from any engine.",
+                            "dialog-warning")
+        if bad == 0 and sus == 0:
+            release(path)
+            notify("Clean — released", f"{html.escape(path.name)} (0/{total} detections)",
+                   "low", "security-high", expire=4000)
+            return False
+        log(f"flagged {path.name}: {bad} malicious, {sus} suspicious")
+        return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low")
+
+    def ask(self, path, sha, summary, body, icon, extra=(), report=True):
+        """Prompt until the user picks an action. Returns True if the file stays held,
+        or the chosen extra action key."""
+        actions = list(extra) + [("release", "Release"), ("delete", "Delete")]
+        if sha and report:
+            actions.append(("report", "Open report"))
+        while True:
+            choice = notify(summary, body, "critical", icon, actions)
+            if choice == "report":
+                subprocess.Popen(["xdg-open", f"https://www.virustotal.com/gui/file/{sha}"])
+                # Re-ask without the report button, after a pause so the new popup
+                # doesn't land under the cursor and catch a repeated click.
+                actions.remove(("report", "Open report"))
+                time.sleep(2)
+                continue
+            if choice == "release":
+                release(path)
+                return False
+            if choice == "delete":
+                delete(path)
+                return False
+            if choice == "retry":
+                return False  # picked up again by the next scan
+            if choice:
+                return choice
+            log(f"holding {path.name} (notification dismissed)")
+            return True
+
+
+def main():
+    QUARANTINE.mkdir(parents=True, exist_ok=True)
+    warned = False
+    while not KEY_FILE.exists() or not KEY_FILE.read_text().strip():
+        if not warned:
+            log(f"no API key at {KEY_FILE}")
+            notify("No VirusTotal API key", f"Put your key in {KEY_FILE}.\nDownloads stay quarantined until then.",
+                   "critical", "dialog-error")
+            warned = True
+        time.sleep(30)
+    session.headers["x-apikey"] = KEY_FILE.read_text().strip()
+
+    q = Quarantine()
+    log(f"watching {QUARANTINE}")
+    while True:
+        try:
+            q.scan()
+        except Exception as e:
+            log(f"scan error: {e}")
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
