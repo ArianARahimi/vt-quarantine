@@ -7,6 +7,11 @@ for you to decide.
 A small Python daemon for Linux desktops, run as a systemd user service and
 driven through desktop notifications.
 
+<p align="center">
+  <img src="docs/notifications.png" width="336"
+       alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Release / Delete / Open report buttons, and a clean file released automatically">
+</p>
+
 ## How it works
 
 1. The browser saves every download to `~/Downloads/.quarantine`.
