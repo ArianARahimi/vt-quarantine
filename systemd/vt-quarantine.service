@@ -1,5 +1,5 @@
 [Unit]
-Description=VirusTotal check for Waterfox downloads (quarantine -> ~/Downloads)
+Description=VirusTotal check for browser downloads (quarantine -> ~/Downloads)
 PartOf=graphical-session.target
 After=graphical-session.target
 

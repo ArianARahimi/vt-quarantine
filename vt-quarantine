@@ -31,13 +31,13 @@ UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
 
 # Unknown files of these types are uploaded without asking; anything else
-# (documents, media, ...) asks first, since uploads are visible to VT subscribers.
+# (documents, media, archives, disk images, ...) asks first, since uploads can be
+# downloaded by VT subscribers and an archive may hold private files.
 AUTO_UPLOAD_EXT = {
     ".exe", ".msi", ".msix", ".appx", ".dll", ".scr", ".com", ".cpl", ".sys",
     ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk",
-    ".jar", ".apk", ".appimage", ".run", ".bin", ".sh", ".py", ".pl", ".deb", ".rpm",
-    ".flatpak", ".snap", ".pkg", ".dmg", ".iso", ".img", ".cab",
-    ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".xz", ".txz", ".bz2", ".zst", ".lz4",
+    ".jar", ".apk", ".appimage", ".run", ".sh", ".py", ".pl", ".deb", ".rpm",
+    ".flatpak", ".snap", ".pkg", ".dmg",
 }
 EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!")
 
@@ -73,8 +73,10 @@ def vt(method, url, upload=None):
     for _ in range(6):
         limiter.wait()
         if upload:
-            with open(upload, "rb") as f:
-                r = session.request(method, url, files={"file": (upload.name, f)}, timeout=600)
+            # Sent under a generic name: VT shows submission names to subscribers.
+            with open_nofollow(upload) as f:
+                r = session.request(method, url, files={"file": ("sample" + upload.suffix.lower(), f)},
+                                    timeout=600)
         else:
             r = session.request(method, url, timeout=60)
         if r.status_code != 429:
@@ -91,7 +93,8 @@ def notify(summary, body, urgency="normal", icon="security-medium", actions=(), 
         cmd += ["-t", str(expire)]
     for key, label in actions:
         cmd.append(f"--action={key}={label}")
-    cmd += [summary, body]
+    # "--" stops a filename that starts with "-" from being read as an option.
+    cmd += ["--", summary, body]
     return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
 
 
@@ -103,7 +106,7 @@ class Progress:
         self.id = None
         self.proc = subprocess.Popen(
             ["notify-send", "-a", APP, "-u", "normal", "-i", "cloud-upload", "-t", "0", "-p",
-             "--action=report=Open report", summary, body],
+             "--action=report=Open report", "--", summary, body],
             stdout=subprocess.PIPE, text=True)
         threading.Thread(target=self._watch, args=(sha,), daemon=True).start()
 
@@ -122,9 +125,14 @@ class Progress:
         self.proc.terminate()
 
 
+def open_nofollow(path):
+    """Open for reading, refusing a symlink swapped in after the directory scan."""
+    return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb")
+
+
 def sha256(path):
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open_nofollow(path) as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -165,7 +173,7 @@ def delete(path):
 def should_auto_upload(path):
     if path.suffix.lower() in AUTO_UPLOAD_EXT:
         return True
-    with open(path, "rb") as f:
+    with open_nofollow(path) as f:
         return f.read(4).startswith(EXECUTABLE_MAGIC)
 
 
@@ -235,7 +243,7 @@ class Quarantine:
                 # A file still queued on VT has all-zero stats and no analysis date.
                 if attrs.get("last_analysis_date"):
                     return self.verdict(path, sha, attrs["last_analysis_stats"],
-                                        attrs.get("last_analysis_results"))
+                                        attrs.get("last_analysis_results"), attrs.get("tags"))
                 if not progress:
                     log(f"{path.name} is known to VT but not analysed yet, waiting")
                     progress = Progress("Scanning on VirusTotal",
@@ -266,9 +274,13 @@ class Quarantine:
                             "finishes (usually a few minutes).", sha)
         try:
             stats, results = self.upload(path)
+            # The analysis object has no tags; the file object says if it is encrypted.
+            r = vt("GET", f"/files/{sha}")
+            r.raise_for_status()
+            tags = r.json()["data"]["attributes"].get("tags")
         finally:
             progress.close()
-        return self.verdict(path, sha, stats, results)
+        return self.verdict(path, sha, stats, results, tags)
 
     def upload(self, path):
         log(f"uploading {path.name}")
@@ -295,11 +307,18 @@ class Quarantine:
                 return attrs["stats"], attrs.get("results")
         raise RuntimeError("VirusTotal analysis timed out")
 
-    def verdict(self, path, sha, stats, results):
+    def verdict(self, path, sha, stats, results, tags=None):
         bad, sus, total, body = detection_summary(stats, results)
         if total == 0:
             return self.ask(path, sha, "No engines could scan this file",
                             f"{html.escape(path.name)} got no verdict from any engine.",
+                            "dialog-warning")
+        if bad == 0 and sus == 0 and "encrypted" in (tags or ()):
+            # Engines can't see inside a password-protected archive, so 0 detections
+            # means nothing; this is a common way to slip malware past scanners.
+            return self.ask(path, sha, "Encrypted archive",
+                            f"{html.escape(path.name)} is password-protected, so VirusTotal "
+                            f"could not scan its contents (0/{total} means nothing here).",
                             "dialog-warning")
         if bad == 0 and sus == 0:
             release(path)
