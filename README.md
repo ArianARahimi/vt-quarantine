@@ -1,46 +1,100 @@
 # vt-quarantine
 
 Holds browser downloads in a quarantine folder until VirusTotal has checked
-them. Clean files move to `~/Downloads` on their own. Anything flagged waits
-for you to decide.
+them. Clean files move to your Downloads folder on their own. Anything flagged
+waits for you to decide.
 
-A small Python daemon for Linux desktops, run as a systemd user service and
-driven through desktop notifications.
+A small background program for **Windows 10/11, Linux and macOS**, driven
+entirely through notifications. One file, no installer framework, and the only
+prerequisite is Python, which the Windows installer sets up for you if it's
+missing.
 
 <p align="center">
   <img src="docs/notifications.png" width="336"
        alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Release / Delete / Open report buttons, and a clean file released automatically">
 </p>
 
+## Install
+
+You need a free [VirusTotal API key](https://www.virustotal.com/gui/my-apikey)
+(sign up, then copy the key from that page). Download this repository
+(**Code → Download ZIP**) and extract it, then:
+
+| | |
+|---|---|
+| **Windows** | Double-click **`install.cmd`**. If Python 3.11+ isn't installed, it installs it for your account (via winget) first. |
+| **macOS** | Double-click **`install.command`** (the first time: right-click → Open). |
+| **Linux** | Run `sh install.sh` in a terminal. |
+
+The installer asks for your API key, copies the program to its own folder, and
+sets it to start whenever you sign in. Then there's one manual step: point your
+browser's download folder at the quarantine folder it prints:
+
+| | Quarantine folder |
+|---|---|
+| Windows | `%USERPROFILE%\Downloads\.quarantine` (or wherever your Downloads folder lives) |
+| macOS | `~/Downloads/.quarantine` |
+| Linux | `~/Downloads/.quarantine` (follows `XDG_DOWNLOAD_DIR`) |
+
+- **Chrome, Edge, Brave, Vivaldi, Opera:** Settings → Downloads → Location →
+  Change. Turn off "Ask where to save each file".
+- **Firefox, Waterfox, LibreWolf:** Settings → General → Downloads → Save files
+  to → Browse. Or append [`browser/user.js`](browser/user.js) to your profile's
+  `user.js`.
+- **Safari:** Settings → General → File download location → Other.
+
+On macOS the folder picker hides dot-folders: press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd>
+to show them. On Linux (GTK dialogs) press <kbd>Ctrl</kbd><kbd>H</kbd>.
+
+To check that notifications work, run the program with `--test-notification`.
+
+### Uninstall
+
+Windows: Settings → Apps → **VirusTotal Quarantine** → Uninstall. Anywhere:
+run `vt-quarantine --uninstall`. It stops the program, removes the autostart
+entry, and offers to delete your API key and downloaded packages. Files still in
+quarantine are left alone.
+
 ## How it works
 
-1. The browser saves every download to `~/Downloads/.quarantine`.
-2. The daemon waits for the download to finish (no `.part` file, size stable),
-   hashes it, and looks up the SHA-256 on VirusTotal (API v3).
+1. The browser saves every download to the quarantine folder.
+2. The program waits for the download to finish (no `.part`/`.crdownload`
+   file, size stable), hashes it, and looks up the SHA-256 on VirusTotal
+   (API v3).
 3. Then, depending on the result:
 
 | Result | What happens |
 |---|---|
-| 0 malicious, 0 suspicious | Moved to `~/Downloads`, with a short "Clean — released" notification |
-| Flagged by any engine | Critical notification listing the engines, with **Release** / **Delete** / **Open report** buttons |
+| 0 malicious, 0 suspicious | Moved to Downloads, with a short "Clean — released" notification |
+| Flagged by any engine | Notification listing the engines, with **Release** / **Delete** / **Open report** buttons |
 | Password-protected archive with 0 detections | Held, with a warning: engines can't see inside, so "clean" means nothing |
 | Unknown executable, script or installer | Uploaded to VirusTotal automatically, then handled as above |
 | Unknown other file (documents, media, archives, disk images, …) | Asks before uploading (see [Privacy](#privacy)) |
 | Known but still queued on VT | Waits for the analysis. VT returns all-zero stats for a queued file, and those are never treated as clean |
+| Changed after it was hashed | Checked again; a verdict only ever applies to the exact contents that were checked |
 
 While a scan is running, a "Scanning on VirusTotal" notification with an
 **Open report** button stays up. VirusTotal scans can take several minutes.
 
-If you dismiss a notification, the file stays in quarantine until the service
-restarts.
+If you dismiss a notification, the file stays in quarantine until the program
+restarts (next sign-in).
 
-The free public API allows 4 requests a minute and 500 a day. The daemon
+The free public API allows 4 requests a minute and 500 a day. The program
 spaces out its requests to stay under that limit and waits out any 429
 responses.
 
+### Notifications on each platform
+
+- **Windows:** toast notifications. Ones that need a decision stay on screen
+  until you press a button.
+- **Linux:** standard desktop notifications (KDE Plasma, GNOME, dunst, …;
+  the notification daemon must support buttons).
+- **macOS:** a dialog when a decision is needed, a Notification Center banner
+  otherwise. A dialog that gets no answer within a day counts as dismissed.
+
 ## Privacy
 
-- **Known files are never uploaded.** The daemon sends only the SHA-256 hash.
+- **Known files are never uploaded.** Only the SHA-256 hash is sent.
   VirusTotal doesn't learn the file's contents or name, though it does see
   which API key looked the hash up.
 - **Uploaded files are not private.** Anything uploaded to VirusTotal can be
@@ -50,60 +104,88 @@ responses.
 - **Uploads go out as `sample.<ext>`**, not under the original filename.
 - **Uploads are tied to your API key's account.** VirusTotal attributes each
   submission to the key that sent it.
+- **No telemetry.** The program talks to `www.virustotal.com` and, once on
+  first run, to PyPI (see below). Nothing else.
+
+## Security
+
+- **Dependencies are pinned and hash-checked.** Besides Python's standard
+  library, the program needs [jeepney](https://pypi.org/project/jeepney/) on
+  Linux (D-Bus) and the [winrt](https://pypi.org/project/winrt-runtime/)
+  packages on Windows (toasts). macOS needs nothing extra. On first run they're
+  downloaded from PyPI and checked against SHA-256 hashes built into the
+  program, then unpacked into its own folder. No pip, no build step, nothing
+  installed system-wide. A package that doesn't match its hash is refused.
+- **The API key only goes to VirusTotal.** It's sent over HTTPS to
+  `www.virustotal.com` and nowhere else. Redirects aren't followed, so the key
+  can't be forwarded to another host. The key file is readable only by you.
+- **Untrusted filenames stay inert.** They're escaped in notifications, passed
+  to macOS dialogs as data rather than script, and never put into upload
+  headers.
+- **Symlinks are refused.** A link planted in the quarantine folder isn't
+  followed.
+- **One copy at a time.** A second instance exits instead of racing the first.
+- **Doesn't run as root.**
+- On Windows, released files keep their "downloaded from the internet" mark,
+  so SmartScreen and Office still treat them with caution.
 
 ## Limitations
 
 - **A clean result is not a guarantee.** New or targeted malware often has no
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Only the quarantine folder is covered.** Downloads made by other browsers,
-  profiles or tools don't go through the daemon.
-- **Other processes on your account are out of scope.** Anything running as
-  your user can write to the quarantine folder or edit the daemon itself.
+  profiles or tools don't go through it.
+- **Other programs running as you are out of scope.** Anything running under
+  your account can write to the quarantine folder or edit the program itself.
 - **API quota.** If the quota runs out, files stay in quarantine and you're
   asked what to do. A failed check never releases a file.
+- **macOS support is the newest** and has had the least real-world use.
 
-## Requirements
+## Commands
 
-- Python 3 with `requests`
-- `notify-send` from libnotify 0.8 or newer (needs `--action` and `-p`)
-- `gdbus` (glib2) and `xdg-open`
-- A notification daemon that supports actions (KDE Plasma, GNOME, dunst, …)
-- A free [VirusTotal API key](https://www.virustotal.com/gui/my-apikey)
+```
+vt-quarantine                     run (what autostart does)
+vt-quarantine --install           set up, ask for the API key, start at sign-in
+vt-quarantine --uninstall         stop and remove autostart
+vt-quarantine --set-key           save or replace the API key
+vt-quarantine --check             fetch missing packages and check notifications
+vt-quarantine --test-notification show a test notification with buttons
+vt-quarantine --version
+```
 
-On Arch: `pacman -S python-requests libnotify glib2 xdg-utils`
+On Windows run these as `py vt-quarantine …` from the extracted folder, or
+`py "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" …` once installed.
 
-## Install
+## Where things live
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `~/.local/share/vt-quarantine/` |
+| API key | `%APPDATA%\vt-quarantine\api_key` | `~/Library/Application Support/vt-quarantine/api_key` | `~/.config/vt-quarantine/api_key` |
+| Log | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.log` | `~/Library/Application Support/vt-quarantine/vt-quarantine.log` | `journalctl --user -u vt-quarantine -f` |
+| Autostart | `HKCU\…\CurrentVersion\Run` | `~/Library/LaunchAgents/vt-quarantine.plist` | `~/.config/systemd/user/vt-quarantine.service` |
+
+If a download never shows up in Downloads, check the log and the quarantine
+folder.
+
+## Manual install (Linux, systemd)
+
+If you'd rather keep the program in `~/.local/bin` (for example as a symlink
+into a git checkout) than use `--install`:
 
 ```sh
 install -Dm755 vt-quarantine ~/.local/bin/vt-quarantine
 install -Dm644 systemd/vt-quarantine.service ~/.config/systemd/user/vt-quarantine.service
-
-mkdir -p ~/.config/vt-quarantine
-install -m600 /dev/null ~/.config/vt-quarantine/api_key
-$EDITOR ~/.config/vt-quarantine/api_key   # paste your API key
-
+~/.local/bin/vt-quarantine --set-key
 systemctl --user daemon-reload
 systemctl --user enable --now vt-quarantine.service
 ```
 
-Then point the browser's download folder at `~/Downloads/.quarantine`. In
-Firefox-based browsers, append [`browser/user.js`](browser/user.js) to your
-profile's `user.js`, or set the download folder in Settings.
-
-## Logs
-
-```sh
-journalctl --user -u vt-quarantine -f
-```
-
-If a download never shows up in `~/Downloads`, check the log and
-`~/Downloads/.quarantine`.
-
 ## Configuration
 
-Settings are constants at the top of `vt-quarantine`: folders, poll interval,
-rate limit, upload size limits, analysis timeout, and the list of file types
-that are uploaded without asking.
+Settings are constants at the top of `vt-quarantine`: poll interval, rate
+limit, upload size limits, analysis timeout, and the list of file types that
+are uploaded without asking.
 
 ## License
 
