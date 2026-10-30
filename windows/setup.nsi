@@ -56,6 +56,9 @@ Var KeyField
 Var Quarantine
 
 !define KEY_FILE "$APPDATA\vt-quarantine\api_key"
+; Where the program keeps it once it has started: encrypted for this Windows account.
+; Setup can't read it, only keep it.
+!define KEY_SAVED "$APPDATA\vt-quarantine\api_key.dpapi"
 
 !macro Fail MSG
   ; Kept for silent installs, which show no message.
@@ -218,6 +221,7 @@ Function WelcomePage
   Pop $KeyField
   IntOp $3 $3 + 16
   ${If} ${FileExists} "${KEY_FILE}"
+  ${OrIf} ${FileExists} "${KEY_SAVED}"
     ${NSD_CreateLabel} 0 $3u 60% 10u "Leave it empty to keep the key you saved before."
     Pop $0
   ${EndIf}
@@ -252,6 +256,7 @@ Function WelcomeLeave
   StrCpy $Key $1
   ${If} $Key == ""
     ${IfNot} ${FileExists} "${KEY_FILE}"
+    ${AndIfNot} ${FileExists} "${KEY_SAVED}"
       MessageBox MB_YESNO|MB_ICONQUESTION "Without an API key nothing gets checked, and downloads wait in quarantine.$\r$\n$\r$\nInstall anyway and enter the key later? (A notification will ask for it.)" IDYES +2
       Abort
     ${EndIf}
@@ -356,6 +361,9 @@ Section
     FileRead $0 $Key 64
     FileClose $0
   ${EndIf}
+  ${If} ${FileExists} "${KEY_SAVED}"
+    CopyFiles /SILENT "${KEY_SAVED}" "$PLUGINSDIR\api_key.dpapi"
+  ${EndIf}
   Call SaveKey
   ; The browser's folder picker needs it to exist.
   CreateDirectory "$Quarantine"
@@ -374,6 +382,11 @@ Section
   Delete "$TEMP\vt-quarantine-setup.log"
   ${IfNot} ${FileExists} "${KEY_FILE}"
     Call SaveKey
+  ${EndIf}
+  ${IfNot} ${FileExists} "${KEY_SAVED}"
+  ${AndIf} ${FileExists} "$PLUGINSDIR\api_key.dpapi"
+    CreateDirectory "$APPDATA\vt-quarantine"
+    CopyFiles /SILENT "$PLUGINSDIR\api_key.dpapi" "${KEY_SAVED}"
   ${EndIf}
   ; The .msi starts it too; a second copy just exits.
   Exec '"$Pythonw" "$LOCALAPPDATA\vt-quarantine\vt-quarantine.py"'

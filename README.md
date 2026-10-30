@@ -203,8 +203,11 @@ this version": you're asked again only when the next one comes out.
 - **No telemetry.** The program talks to VirusTotal, to PyPI once on first run,
   and to GitHub once a day for updates (only your IP address and the program's
   version reach GitHub). Nothing else.
-- **Your API key only goes to VirusTotal,** over HTTPS with redirects refused,
-  and the key file is readable only by you.
+- **Your API key is kept in your system's password store:** encrypted for your
+  Windows account, in the macOS Keychain, or in KWallet / GNOME Keyring on
+  Linux. A copied disk, a backup or another account can't read it. Where
+  there's no password store, it's in a file only you can read. It's asked for
+  once, and only ever sent to VirusTotal, over HTTPS with redirects refused.
 - **Dependencies are pinned.** Besides Python, it needs
   [jeepney](https://pypi.org/project/jeepney/) on Linux and the
   [winrt](https://pypi.org/project/winrt-runtime/) packages on Windows. They
@@ -234,7 +237,7 @@ this version": you're asked again only when the next one comes out.
 - **The free API allows 4 lookups a minute and 500 a day.** vt-quarantine paces
   itself; if the quota runs out, files wait in quarantine.
 - **macOS support is the newest** and has had the least real-world use. Its
-  browser setup and file locking haven't run on a Mac yet.
+  browser setup, file locking and Keychain storage haven't run on a Mac yet.
 - **Waiting for fullscreen apps works on Windows, KDE Plasma and X11 desktops.**
   GNOME on Wayland and macOS give programs no way to tell, so there nothing
   waits.
@@ -254,6 +257,9 @@ unverified:
   untested. This is the part most likely to need fixes.
 - **Automatic updates haven't run on Windows yet.** Downloading the new setup
   and running it silently is covered by unit tests only.
+- **Keeping the API key encrypted (DPAPI) has only run under Wine.** Setup
+  writes the key you type to a file, and the program moves it into protected
+  storage the first time it starts.
 - **Waiting for fullscreen games hasn't run on real Windows.** It asks Windows
   the same question Windows asks before showing its own notifications
   (`SHQueryUserNotificationState`), which Wine doesn't answer the way Windows
@@ -343,7 +349,7 @@ one it is.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `/usr/bin/vt-quarantine` (package) or `~/.local/share/vt-quarantine/` |
-| API key | `%APPDATA%\vt-quarantine\api_key` | `~/Library/Application Support/vt-quarantine/api_key` | `~/.config/vt-quarantine/api_key` |
+| API key | `%APPDATA%\vt-quarantine\api_key.dpapi` (encrypted for your account) | Keychain, item "vt-quarantine" | KWallet / GNOME Keyring, or `~/.config/vt-quarantine/api_key` without one |
 | Files marked safe | `%APPDATA%\vt-quarantine\marked-safe` | `~/Library/Application Support/vt-quarantine/marked-safe` | `~/.config/vt-quarantine/marked-safe` |
 | Log | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.log` | `~/Library/Application Support/vt-quarantine/vt-quarantine.log` | `journalctl --user -u vt-quarantine -f` |
 | Autostart | `HKCU\…\CurrentVersion\Run` | `~/Library/LaunchAgents/vt-quarantine.plist` | `~/.config/systemd/user/vt-quarantine.service` |

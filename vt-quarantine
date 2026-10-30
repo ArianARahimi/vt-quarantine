@@ -215,7 +215,9 @@ def downloads_dir():
 
 RELEASE_DIR = downloads_dir()
 QUARANTINE = RELEASE_DIR / ".quarantine"
-KEY_FILE = CONFIG_DIR / "api_key"
+KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
+DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
+KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
 LIB_ROOT = DATA_DIR / "lib"
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
 INSTALLED_SCRIPT = DATA_DIR / "vt-quarantine.py"
@@ -846,7 +848,9 @@ limiter = RateLimiter(REQUESTS_PER_MINUTE)
 def vt(method, url, upload=None):
     """Rate-limited VirusTotal request; retries when the minute quota is hit."""
     global api_key
-    api_key = read_key() or api_key  # a new key works without a restart
+    if key_changed():  # a new key works without a restart
+        with contextlib.suppress(KeyStoreLocked):
+            api_key = read_key() or api_key
     if not url.startswith("http"):
         url = API + url
     parts = urllib.parse.urlsplit(url)
@@ -1983,6 +1987,35 @@ def ask_to_set_folder(browser):
         return
 
 
+def startup_key():
+    """The API key at startup. If it's in a password store that stays locked, say so
+    (rather than "no key") and offer to unlock it again."""
+    while True:
+        try:
+            return read_key()
+        except KeyStoreLocked:
+            log("the password store holding the API key stayed locked")
+            wait_for_free_screen("the unlock question")
+            choice = notifier.notify("Your VirusTotal API key is locked away",
+                                     "It's in your password store, which stayed locked. Downloads stay "
+                                     "quarantined until it's unlocked.", "critical", "dialog-password",
+                                     [("unlock", "Unlock")])
+            if choice != "unlock":
+                # Closed: ask again only when it's needed, when something is downloaded.
+                wait_for_download()
+
+
+def wait_for_download():
+    """Until something new lands in the quarantine folder."""
+    def present():
+        with contextlib.suppress(OSError), os.scandir(QUARANTINE) as entries:
+            return {e.name for e in entries if is_candidate(e.name)}
+        return set()
+    before = present()
+    while not present() - before:
+        time.sleep(POLL_SECONDS)
+
+
 def tell_updated():
     # After waiting out a fullscreen window, make sure it's seen.
     urgency = "normal" if wait_for_free_screen("the update note") else "low"
@@ -2009,6 +2042,295 @@ def undo_browser_setup():
             print(f"Put back the download settings of {folder}")
 
 
+# --- API key -------------------------------------------------------------------------
+# The key is kept in the system's own password store: on Windows encrypted for this
+# Windows account (DPAPI), on macOS in the Keychain, on Linux in the Secret Service
+# (KWallet, GNOME Keyring). So it's unreadable from a copied disk, a backup or another
+# account. Without a store it stays in a file only this user can read. A key put into
+# that file (by hand, or by the Windows setup) is moved into the store.
+
+class KeyStoreLocked(Exception):
+    """The key is in a password store that's locked, and it wasn't unlocked."""
+
+
+class DpapiStore:
+    name = "Windows' protected storage"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    @staticmethod
+    def crypt(data, protect):
+        import ctypes
+        from ctypes import wintypes
+
+        class Blob(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        buf = ctypes.create_string_buffer(data, len(data))
+        src, out = Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), Blob()
+        crypt32 = ctypes.windll.crypt32
+        call = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+        # 1: CRYPTPROTECT_UI_FORBIDDEN
+        if not call(ctypes.byref(src), "vt-quarantine API key" if protect else None, None, None, None, 1,
+                    ctypes.byref(out)):
+            raise OSError(ctypes.GetLastError(), "Windows couldn't " + ("protect" if protect else "unprotect")
+                          + " the key")
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+
+    def get(self):
+        try:
+            return self.crypt(DPAPI_FILE.read_bytes(), False).decode().strip()
+        except FileNotFoundError:
+            return ""
+
+    def put(self, key):
+        DPAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = DPAPI_FILE.with_name(DPAPI_FILE.name + ".new")
+        tmp.write_bytes(self.crypt(key.encode(), True))
+        os.replace(tmp, DPAPI_FILE)
+
+    def delete(self):
+        DPAPI_FILE.unlink(missing_ok=True)
+
+
+class KeychainStore:
+    name = "the macOS Keychain"
+    ITEM = ["-a", "vt-quarantine", "-s", "vt-quarantine"]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def get(self):
+        r = subprocess.run(["security", "find-generic-password", *self.ITEM, "-w"],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 44:  # not there
+            return ""
+        if r.returncode:
+            raise OSError(r.stderr.strip() or f"security exited with {r.returncode}")
+        return r.stdout.strip()
+
+    def put(self, key):
+        # Given through stdin, so it never shows in the list of running programs.
+        # (It's 64 hex digits: nothing in it needs quoting.)
+        r = subprocess.run(["security", "-i"], capture_output=True, text=True, timeout=60,
+                           input=f'add-generic-password -U {" ".join(self.ITEM)} '
+                                 f'-l "VirusTotal API key (vt-quarantine)" -w {key}\n')
+        if r.returncode:
+            raise OSError(r.stderr.strip() or f"security exited with {r.returncode}")
+
+    def delete(self):
+        subprocess.run(["security", "delete-generic-password", *self.ITEM], capture_output=True, timeout=60)
+
+
+class SecretServiceStore:
+    """The freedesktop Secret Service. The key travels over this user's own session
+    bus, so a plain session is enough."""
+
+    name = "your system's password store (Secret Service)"
+    BUS = "org.freedesktop.secrets"
+    PREFIX = "org.freedesktop.Secret."
+    ATTRIBUTES = {"application": "vt-quarantine"}
+
+    def __enter__(self):
+        from jeepney.io.blocking import open_dbus_connection
+        self.conn = open_dbus_connection("SESSION")
+        try:
+            self.session = self.call("/org/freedesktop/secrets", "Service", "OpenSession", "sv",
+                                     ("plain", ("s", "")))[1]
+        except Exception:
+            self.conn.close()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        self.conn.close()
+
+    def call(self, path, interface, method, signature=None, body=()):
+        from jeepney import DBusAddress, new_method_call
+        from jeepney.wrappers import unwrap_msg
+        address = DBusAddress(path, bus_name=self.BUS, interface=self.PREFIX + interface)
+        return unwrap_msg(self.conn.send_and_get_reply(new_method_call(address, method, signature, body),
+                                                       timeout=30))
+
+    def prompt(self, path):
+        """Show the store's own prompt (to unlock it, say); False if it was closed."""
+        if path == "/":
+            return True
+        from jeepney import MatchRule, message_bus
+        from jeepney.wrappers import unwrap_msg
+        rule = MatchRule(type="signal", interface=self.PREFIX + "Prompt", member="Completed", path=path)
+        with self.conn.filter(rule) as completed:
+            unwrap_msg(self.conn.send_and_get_reply(message_bus.AddMatch(rule), timeout=10))
+            self.call(path, "Prompt", "Prompt", "s", ("",))
+            dismissed, _result = self.conn.recv_until_filtered(completed, timeout=600).body
+        return not dismissed
+
+    def unlock(self, paths):
+        _unlocked, prompt = self.call("/org/freedesktop/secrets", "Service", "Unlock", "ao", (paths,))
+        if not self.prompt(prompt):
+            raise KeyStoreLocked("the password store stayed locked")
+
+    def items(self):
+        unlocked, locked = self.call("/org/freedesktop/secrets", "Service", "SearchItems", "a{ss}",
+                                     (self.ATTRIBUTES,))
+        if locked:
+            self.unlock(locked)
+        return list(unlocked) + list(locked)
+
+    def get(self):
+        items = self.items()
+        if not items:
+            return ""
+        secrets = self.call("/org/freedesktop/secrets", "Service", "GetSecrets", "aoo",
+                            (items[:1], self.session))[0]
+        return bytes(secrets[items[0]][2]).decode().strip()
+
+    def put(self, key):
+        collection = self.call("/org/freedesktop/secrets", "Service", "ReadAlias", "s", ("default",))[0]
+        if collection == "/":
+            raise OSError("there's no default keyring")
+        self.unlock([collection])
+        properties = {self.PREFIX + "Item.Label": ("s", "VirusTotal API key (vt-quarantine)"),
+                      self.PREFIX + "Item.Attributes": ("a{ss}", self.ATTRIBUTES)}
+        _item, prompt = self.call(collection, "Collection", "CreateItem", "a{sv}(oayays)b",
+                                  (properties, (self.session, b"", key.encode(), "text/plain"), True))
+        if not self.prompt(prompt):
+            raise KeyStoreLocked("the key wasn't saved")
+
+    def delete(self):
+        for item in self.items():
+            self.prompt(self.call(item, "Item", "Delete")[0])
+
+
+def key_store():
+    """The password store to keep the key in, or None (then it stays in KEY_FILE)."""
+    if WINDOWS:
+        return DpapiStore()
+    if MACOS:
+        return KeychainStore()
+    try:
+        with SecretServiceStore():
+            pass
+        return SecretServiceStore()
+    except Exception as e:
+        log(f"no password store ({e}); the API key stays in {KEY_FILE}")
+        return None
+
+
+def read_plain_key():
+    try:
+        return KEY_FILE.read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def write_plain_key(key):
+    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(key + "\n")
+    if not WINDOWS:
+        os.chmod(KEY_FILE, 0o600)
+
+
+def read_key():
+    """The saved API key ("" if there's none). A key found in the plain file is moved
+    into the password store. Raises KeyStoreLocked if the store stayed locked."""
+    plain = read_plain_key()
+    store = key_store()
+    if store is None:
+        return plain
+    try:
+        with store:
+            if not plain:
+                return store.get()
+            store.put(plain)
+            if store.get() == plain:
+                KEY_FILE.unlink(missing_ok=True)
+                log(f"moved the API key into {store.name}")
+            return plain
+    except KeyStoreLocked:
+        if plain:
+            return plain
+        raise
+    except Exception as e:
+        log(f"could not use {store.name}: {e}")
+        return plain
+
+
+def key_status():
+    try:
+        key = read_key()
+    except KeyStoreLocked:
+        return "in a locked password store"
+    if not key:
+        return "MISSING"
+    store = key_store()
+    return f"saved in {store.name}" if store and not KEY_FILE.exists() else f"saved in {KEY_FILE}"
+
+
+def save_key(key):
+    """Keep the key in the password store (or the plain file); returns where it went."""
+    store = key_store()
+    if store is not None:
+        try:
+            with store:
+                store.put(key)
+                if store.get() == key:
+                    KEY_FILE.unlink(missing_ok=True)
+                    where = store.name
+                else:
+                    raise OSError("it didn't read back the same")
+        except Exception as e:
+            log(f"could not use {store.name}: {e}")
+            write_plain_key(key)
+            where = str(KEY_FILE)
+    else:
+        write_plain_key(key)
+        where = str(KEY_FILE)
+    KEY_CHANGED.parent.mkdir(parents=True, exist_ok=True)
+    KEY_CHANGED.touch()
+    return where
+
+
+def forget_key():
+    store = key_store()
+    if store is not None:
+        try:
+            with store:
+                store.delete()
+        except Exception as e:
+            log(f"could not remove the key from {store.name}: {e}")
+    for f in (KEY_FILE, DPAPI_FILE, KEY_CHANGED):
+        f.unlink(missing_ok=True)
+
+
+_key_seen = None
+
+
+def key_changed():
+    """Has a new key been saved since the last look? (A key is read from the store
+    once, not before every request: a store that has locked itself in the meantime
+    would ask for its password at a random moment.)"""
+    global _key_seen
+    try:
+        stamp = KEY_CHANGED.stat().st_mtime_ns
+    except OSError:
+        stamp = None
+    changed = stamp != _key_seen or KEY_FILE.exists()
+    _key_seen = stamp
+    return changed
+
+
 # --- Setup commands --------------------------------------------------------------
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -2020,13 +2342,6 @@ UNIT_MARKER = "# Written by vt-quarantine --install"
 PACKAGED_UNIT = Path("/usr/lib/systemd/user/vt-quarantine.service")
 LAUNCH_AGENT_LABEL = "vt-quarantine"
 LAUNCH_AGENT = HOME / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
-
-
-def read_key():
-    try:
-        return KEY_FILE.read_text().strip()
-    except (OSError, UnicodeDecodeError):
-        return ""
 
 
 def own_console():
@@ -2049,13 +2364,7 @@ def set_key():
             sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
         print("That doesn't look like a VirusTotal API key (64 hex characters). "
               "Try again, or close this window.")
-    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(key + "\n")
-    if not WINDOWS:
-        os.chmod(KEY_FILE, 0o600)
-    print(f"Saved to {KEY_FILE}")
+    print(f"Saved in {save_key(key)}.")
     if own_console():
         print("vt-quarantine starts checking downloads within a minute.")
         time.sleep(3)
@@ -2238,8 +2547,12 @@ def install():
         make_notifier()  # fails early if notifications can't work; on Windows registers the toast name
     except Exception as e:
         sys.exit(f"Notifications don't work here ({e}), and vt-quarantine needs them to ask you things.")
-    if not read_key():
-        set_key()
+    try:
+        if not read_key():
+            set_key()
+    except KeyStoreLocked:
+        print("Your API key is in your password store, which stayed locked; vt-quarantine\n"
+              "will ask to unlock it when it starts.")
     make_quarantine()
     if packaged():
         logs = autostart_linux_packaged()
@@ -2301,7 +2614,7 @@ def uninstall(keep_data=False):
     # the API key, settings, log and downloaded packages deleted. Never the downloads.
     undo_browser_setup()
     unlock_quarantine()
-    KEY_FILE.unlink(missing_ok=True)
+    forget_key()
     for d in (CONFIG_DIR, DATA_DIR):
         shutil.rmtree(d, ignore_errors=True)
     with contextlib.suppress(OSError):
@@ -2315,7 +2628,7 @@ def check():
     """Fetch what's missing and make sure notifications work, without running."""
     print(f"vt-quarantine {VERSION}, Python {platform.python_version()} on {sys.platform}\n"
           f"quarantine folder: {QUARANTINE}\nmoved to:          {RELEASE_DIR}\n"
-          f"API key file:      {KEY_FILE} ({'present' if read_key() else 'MISSING'})\n"
+          f"API key:           {key_status()}\n"
           f"packages folder:   {lib_dir() if pinned_wheels() else '(none needed)'}")
     if not install_requirements():
         return 1
@@ -2366,7 +2679,7 @@ def run():
             time.sleep(10)
 
     warned = False
-    while not read_key():
+    while not (api_key := startup_key()):
         if not warned:
             log(f"no API key at {KEY_FILE}")
             wait_for_free_screen("the API key warning")
@@ -2387,7 +2700,6 @@ def run():
                                 "critical", "dialog-error")
             warned = True
         time.sleep(30)
-    api_key = read_key()
 
     q = Quarantine()
     log(f"vt-quarantine {VERSION} watching {QUARANTINE}")
