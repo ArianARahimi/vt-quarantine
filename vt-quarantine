@@ -1395,7 +1395,7 @@ def uninstall(purge=False):
 def check():
     """Fetch what's missing and make sure notifications work, without running."""
     print(f"vt-quarantine {VERSION}, Python {platform.python_version()} on {sys.platform}\n"
-          f"quarantine folder: {QUARANTINE}\nmoved to:         {RELEASE_DIR}\n"
+          f"quarantine folder: {QUARANTINE}\nmoved to:          {RELEASE_DIR}\n"
           f"API key file:      {KEY_FILE} ({'present' if read_key() else 'MISSING'})\n"
           f"packages folder:   {lib_dir() if pinned_wheels() else '(none needed)'}")
     if not install_requirements():
