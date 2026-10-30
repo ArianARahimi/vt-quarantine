@@ -163,6 +163,16 @@ If you close a notification without choosing, the file stays locked in
 quarantine until the program restarts (at your next sign-in) and asks again. To
 take a file out, use the notification: one moved out by hand stays locked.
 
+### Games and other fullscreen apps
+
+While a game, a video or a presentation fills the screen, vt-quarantine keeps
+everything that isn't about a download to itself: update offers, update notes
+and the first-run browser setup wait, and appear the moment the fullscreen app
+is gone. Updates aren't installed in the middle of a game either.
+
+Notifications about downloads still show straight away: if you're downloading
+something, you're not absorbed in a game.
+
 ## Updates
 
 Once a day, vt-quarantine asks GitHub for the newest release. It only installs
@@ -224,6 +234,9 @@ this version": you're asked again only when the next one comes out.
   itself; if the quota runs out, files wait in quarantine.
 - **macOS support is the newest** and has had the least real-world use. Its
   browser setup and file locking haven't run on a Mac yet.
+- **Waiting for fullscreen apps works on Windows, KDE Plasma and X11 desktops.**
+  GNOME on Wayland and macOS give programs no way to tell, so there nothing
+  waits.
 
 ## Known issues
 
@@ -240,6 +253,10 @@ unverified:
   untested. This is the part most likely to need fixes.
 - **Automatic updates haven't run on Windows yet.** Downloading the new setup
   and running it silently is covered by unit tests only.
+- **Waiting for fullscreen games hasn't run on real Windows.** It asks Windows
+  the same question Windows asks before showing its own notifications
+  (`SHQueryUserNotificationState`), which Wine doesn't answer the way Windows
+  does.
 - **Locking files and the browser setup haven't run on real Windows.** Locking
   uses `icacls` to deny reading, and Copy folder uses PowerShell; under Wine
   both are only partly there. Both are covered by unit tests only.
