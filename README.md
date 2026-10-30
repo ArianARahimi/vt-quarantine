@@ -212,6 +212,10 @@ turns it back on.
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Only the quarantine folder is covered.** Downloads made by other browsers,
   profiles or tools don't go through it.
+- **Save As goes where you choose.** "Save Link As", "Save Page As" and other
+  Save As dialogs skip the quarantine if you pick another folder. In Firefox,
+  Waterfox and LibreWolf, [`browser/user.js`](browser/user.js) makes the dialog
+  start in the quarantine folder.
 - **Other programs running as you are out of scope.** Anything running under
   your account can write to the quarantine folder or edit the program itself.
 - **API quota.** If the quota runs out, files stay in quarantine and you're
