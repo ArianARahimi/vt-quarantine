@@ -48,6 +48,7 @@ USER_AGENT = f"vt-quarantine/{VERSION}"
 
 POLL_SECONDS = 2
 UPDATE_CHECK_SECONDS = 24 * 3600
+CONFIRM_DETECTIONS = 10  # "Mark as safe" asks twice from this many malicious verdicts
 QUEUED_RECHECK_SECONDS = 60      # file known to VT but its analysis is still queued
 ANALYSIS_POLL_SECONDS = 30       # after an upload
 REQUESTS_PER_MINUTE = 4          # free public API limit
@@ -470,6 +471,20 @@ def strip_markup(text):
     return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
+def show_in_folder(path):
+    """Open the folder holding path, with the file selected where the system allows."""
+    try:
+        if WINDOWS:
+            # A path can't contain quotes on Windows, and explorer wants exactly this form.
+            subprocess.Popen(f'explorer /select,"{path}"')
+        elif MACOS:
+            subprocess.Popen(["open", "-R", str(path)])
+        else:
+            open_url(str(path.parent))
+    except OSError as e:
+        log(f"could not open the folder of {path}: {e}")
+
+
 def open_url(url):
     try:
         if not WINDOWS and not MACOS and shutil.which("xdg-open"):
@@ -512,6 +527,37 @@ class Notifier:
 
     def forget(self, handle):
         """Stop tracking a notification that has been answered."""
+
+    # Can a notification carry a button without waiting for an answer? (Not on
+    # macOS, where buttons need a dialog.)
+    transient_buttons = True
+
+    def tell(self, summary, body, icon, actions=(), on_action=None, expire=6000):
+        """Short note that goes away by itself and blocks nothing; on_action(key)
+        runs if one of its buttons is pressed."""
+        if not self.transient_buttons:
+            actions = ()
+
+        def on_event(key):
+            if key and on_action:
+                on_action(key)
+        try:
+            handle = self._show(summary, body, "low", icon, actions, expire, on_event if actions else None)
+        except Exception as e:
+            log(f"could not show notification {summary!r}: {e}")
+            return
+        if actions:
+            # Don't hold on to notes that are never answered: let go of each after
+            # two minutes (checked whenever another one is shown).
+            lock = self.__dict__.setdefault("_told_lock", threading.Lock())
+            told = self.__dict__.setdefault("_told", [])
+            now = time.monotonic()
+            with lock:
+                told.append((now + 120, handle))
+                expired = [h for t, h in told if t <= now]
+                told[:] = [(t, h) for t, h in told if t > now]
+            for h in expired:
+                self.forget(h)
 
     def show(self, summary, body, icon, actions, on_action):
         """Non-blocking notification that stays up until close(); on_action(key) runs
@@ -698,6 +744,10 @@ class WindowsNotifier(Notifier):
         self.notifier.show(native)
         return tag
 
+    def forget(self, tag):
+        with self.lock:
+            self.live.pop(tag, None)
+
     def close(self, tag):
         with self.lock:
             native = self.live.pop(tag, None)
@@ -711,6 +761,8 @@ class WindowsNotifier(Notifier):
 class MacNotifier(Notifier):
     """macOS, through osascript (built in): a dialog when a decision is needed,
     a Notification Center banner otherwise."""
+
+    transient_buttons = False
 
     # Text goes in as arguments, never into the script source, so a filename
     # can't inject AppleScript. The first argument is a fixed word so osascript
@@ -916,6 +968,29 @@ def is_candidate(name):
     return not lower.endswith(PARTIAL_SUFFIXES) and lower not in IGNORED_NAMES
 
 
+SAFE_LIST = CONFIG_DIR / "marked-safe"
+
+
+def marked_safe(sha):
+    """Was this exact file (by SHA-256) marked safe before?"""
+    try:
+        lines = SAFE_LIST.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(line.split(maxsplit=1)[:1] == [sha] for line in lines)
+
+
+def remember_safe(sha, name):
+    SAFE_LIST.parent.mkdir(parents=True, exist_ok=True)
+    with open(SAFE_LIST, "a") as f:
+        f.write(f"{sha}  {' '.join(name.split())}\n")
+
+
+def tell_moved(summary, body, dest):
+    notifier.tell(summary, body, "security-high", [("folder", "Open folder")],
+                  lambda key: show_in_folder(dest))
+
+
 class Quarantine:
     def __init__(self):
         self.lock = threading.Lock()
@@ -956,6 +1031,13 @@ class Quarantine:
         sig = signature(path)
         sha = sha256(path)
         log(f"checking {path.name} {sha}")
+        if marked_safe(sha):
+            if signature(path) != sig:
+                return False  # changed while being hashed: check again
+            log(f"{path.name} was marked safe before")
+            dest = release(path)
+            tell_moved("Marked safe before — moved to Downloads", html.escape(path.name), dest)
+            return False
 
         progress = None
         try:
@@ -987,7 +1069,7 @@ class Quarantine:
         if size > UPLOAD_MAX:
             return self.ask(path, sha, "Not on VirusTotal",
                             f"{name} is unknown and too large to upload ({size // 1024**2} MB).",
-                            "dialog-warning")
+                            "dialog-warning", report=False)
         if not should_auto_upload(path):
             choice = self.ask(path, sha, "Not on VirusTotal",
                               f"{name} is unknown to VirusTotal. Upload it for scanning? "
@@ -1051,33 +1133,50 @@ class Quarantine:
                 # Written to since it was hashed: the verdict is for other contents.
                 log(f"{path.name} changed while being checked, checking again")
                 return False
-            release(path)
-            notifier.notify("Clean — moved to Downloads", f"{html.escape(path.name)} (0/{total} detections)",
-                            "low", "security-high", expire=4000)
+            dest = release(path)
+            tell_moved("Clean — moved to Downloads", f"{html.escape(path.name)} (0/{total} detections)", dest)
             return False
         log(f"flagged {path.name}: {bad} malicious, {sus} suspicious")
-        return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low")
+        return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low", detections=bad)
 
-    def ask(self, path, sha, summary, body, icon, extra=(), report=True):
+    def ask(self, path, sha, summary, body, icon, extra=(), report=True, detections=0):
         """Prompt until the user picks an action. Returns True if the file stays held,
-        or the chosen extra action key."""
-        # The riskiest choice last, where it takes the most deliberate reach.
-        actions = [("report", "Show report")] if sha and report else []
-        actions += list(extra) + [("delete", "Delete"), ("release", "Move to Downloads")]
+        or the chosen extra action key.
+
+        Where there's a VirusTotal report, "Mark as safe" only appears once it has
+        been opened, in a new last place, so no button ever moves under the cursor."""
+        safe = ("release", "Mark as safe")
+        if sha and report:
+            actions = [("report", "Show report"), *extra, ("delete", "Delete")]
+        else:
+            actions = [*extra, ("delete", "Delete"), safe]
         while True:
             choice = notifier.notify(summary, body, "critical", icon, actions)
             if choice == "report":
                 open_url(report_url(sha))
-                # Ask again with the same buttons in the same places: if they moved
-                # up, "Move to Downloads" would land where "Delete" was. The pause
-                # keeps a repeated click from landing on the new popup.
-                time.sleep(2)
+                if safe not in actions:
+                    actions.append(safe)
+                time.sleep(2)  # so a repeated click doesn't land on the next popup
                 continue
+            if choice == "release" and detections >= CONFIRM_DETECTIONS:
+                time.sleep(2)
+                # Same three places again: "Move anyway" is where "Mark as safe" was.
+                choice = notifier.notify(
+                    f"Move {path.name} anyway?",
+                    f"<b>{detections}</b> engines say it is malicious. In Downloads it "
+                    "opens like any other file.",
+                    "critical", icon, [("back", "Back"), ("delete", "Delete"), ("release", "Move anyway")])
+                if choice == "back":
+                    continue
             if choice == "release":
-                release(path)
+                dest = release(path)
+                if sha:
+                    remember_safe(sha, path.name)
+                tell_moved("Marked safe — moved to Downloads", html.escape(path.name), dest)
                 return False
             if choice == "delete":
                 delete(path)
+                notifier.tell("Deleted", html.escape(path.name), "user-trash-full")
                 return False
             if choice == "retry":
                 return False  # picked up again by the next scan
@@ -1788,6 +1887,8 @@ def main():
                        help="download missing packages and check that notifications work")
     group.add_argument("--test-notification", action="store_true",
                        help="show a notification with buttons and print which one you pick")
+    group.add_argument("--forget-safe", action="store_true",
+                       help="forget the files you marked safe (they get checked again)")
     group.add_argument("--auto-update", choices=("on", "off"),
                        help="turn the daily update check on (the default) or off")
     args = parser.parse_args()
@@ -1805,6 +1906,10 @@ def main():
         return test_notification()
     if args.auto_update:
         return set_auto_update(args.auto_update)
+    if args.forget_safe:
+        SAFE_LIST.unlink(missing_ok=True)
+        print("Forgotten: files you marked safe get checked like any other again.")
+        return 0
     return run()
 
 

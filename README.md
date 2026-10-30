@@ -98,16 +98,35 @@ download folder back to Downloads.
 
 | Result | What happens |
 |---|---|
-| 0 malicious, 0 suspicious | Moved to Downloads, with a short "Clean — moved to Downloads" notification |
-| Flagged by any engine | Notification listing the engines, with **Show report** / **Delete** / **Move to Downloads** buttons |
+| 0 malicious, 0 suspicious | Moved to Downloads, with a short "Clean — moved to Downloads" note and an **Open folder** button |
+| Flagged by any engine | Notification listing the engines, with **Show report** and **Delete** (see below) |
 | Password-protected archive with 0 detections | Held, with a warning: engines can't see inside, so "clean" means nothing |
 | Unknown executable, script or installer | Uploaded to VirusTotal automatically, then handled as above |
-| Unknown other file (documents, media, archives, disk images, …) | Asks before uploading (see [Privacy](#privacy)) |
+| Unknown other file (documents, media, archives, disk images, …) | Asks: **Upload**, **Delete** or **Mark as safe** (see [Privacy](#privacy)) |
+| Marked safe before (the exact same file) | Moved to Downloads straight away, without asking VirusTotal |
 | Known but still queued on VT | Waits for the analysis. VT returns all-zero stats for a queued file, and those are never treated as clean |
 | Changed after it was hashed | Checked again; a verdict only ever applies to the exact contents that were checked |
 
-While a scan is running, a "Scanning on VirusTotal" notification with an
+While a scan is running, a "Scanning on VirusTotal" notification with a
 **Show report** button stays up. VirusTotal scans can take several minutes.
+
+### Taking a flagged file out of quarantine
+
+A flagged file can't leave quarantine until you've looked at its report:
+
+1. At first there are only **Show report** and **Delete**.
+2. After **Show report**, the notification comes back with a third button,
+   **Mark as safe**. The other two stay exactly where they were, so a click by
+   position never lands on the wrong one.
+3. When 10 or more engines call the file malicious, **Mark as safe** asks once
+   more: **Back**, **Delete** or **Move anyway**, in the same three places.
+
+A file you mark safe moves to Downloads, and the program remembers it by its
+SHA-256 hash. Downloading that exact file again (a tool you know is a false
+positive, say) sends it straight through. A changed file with the same name is
+checked as usual. `vt-quarantine --forget-safe` clears the list.
+
+**Delete** shows a short "Deleted" note, so you know it worked.
 
 If you dismiss a notification, the file stays in quarantine until the program
 restarts (next sign-in).
@@ -208,7 +227,7 @@ Windows on a real machine, is unverified:
 - **Automatic updates haven't run on Windows yet.** Downloading the new setup
   and running it silently is covered by unit tests only.
 - **Notifications have never been shown on real Windows.** Wine can't display
-  toast notifications, so the buttons (Show report / Delete / Move to Downloads, Enter
+  toast notifications, so the buttons (Show report / Delete / Mark as safe, Enter
   key), notifications that stay on screen until answered, and what happens
   when one is dismissed or goes to the notification centre are all untested.
   This is the part most likely to need fixes.
@@ -274,6 +293,7 @@ vt-quarantine --set-key           save or replace the API key
 vt-quarantine --check             fetch missing packages and check notifications
 vt-quarantine --test-notification show a test notification with buttons
 vt-quarantine --auto-update off   stop checking for updates (on: start again)
+vt-quarantine --forget-safe       forget the files you marked safe
 vt-quarantine --version
 ```
 
@@ -294,6 +314,7 @@ shows which one it is.)
 |---|---|---|---|
 | Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `/usr/bin/vt-quarantine` (package) or `~/.local/share/vt-quarantine/` |
 | API key | `%APPDATA%\vt-quarantine\api_key` | `~/Library/Application Support/vt-quarantine/api_key` | `~/.config/vt-quarantine/api_key` |
+| Files marked safe | `%APPDATA%\vt-quarantine\marked-safe` | `~/Library/Application Support/vt-quarantine/marked-safe` | `~/.config/vt-quarantine/marked-safe` |
 | Log | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.log` | `~/Library/Application Support/vt-quarantine/vt-quarantine.log` | `journalctl --user -u vt-quarantine -f` |
 | Autostart | `HKCU\…\CurrentVersion\Run` | `~/Library/LaunchAgents/vt-quarantine.plist` | `~/.config/systemd/user/vt-quarantine.service` |
 
