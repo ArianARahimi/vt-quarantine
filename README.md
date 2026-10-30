@@ -5,9 +5,8 @@ them. Clean files move to your Downloads folder on their own. Anything flagged
 waits for you to decide.
 
 A small background program for **Windows 10/11, Linux and macOS**, driven
-entirely through notifications. One file, no installer framework, and the only
-prerequisite is Python, which the Windows installer sets up for you if it's
-missing.
+entirely through notifications. The only thing it needs is Python; on Windows
+the setup installs that for you if it's missing.
 
 <p align="center">
   <img src="docs/notifications.png" width="336"
@@ -17,18 +16,34 @@ missing.
 ## Install
 
 You need a free [VirusTotal API key](https://www.virustotal.com/gui/my-apikey)
-(sign up, then copy the key from that page). Download this repository
-(**Code → Download ZIP**) and extract it, then:
+(sign up, then copy the key from that page).
+
+**Windows:** download **`vt-quarantine-<version>-setup.exe`** from
+[Releases](https://github.com/ArianARahimi/vt-quarantine/releases) and run it.
+It asks for your API key and installs for your account only, with no
+administrator rights needed. If there's no Python 3.11 or newer, it downloads Python from
+python.org first. It checks the download against a pinned SHA-256 and installs
+only the parts it needs: no launcher, file associations, shortcuts or PATH changes.
+Windows may warn that the publisher is unknown: **More info → Run anyway**.
+
+For deployment tools (Intune, Group Policy, `msiexec /i … /qn`) there's also
+`vt-quarantine-<version>.msi`. It installs the same thing but needs Python to be
+there already.
+
+**macOS and Linux:** download this repository (**Code → Download ZIP**) and
+extract it, then:
 
 | | |
 |---|---|
-| **Windows** | Double-click **`install.cmd`**. If Python 3.11+ isn't installed, it installs it for your account (via winget) first. |
 | **macOS** | Double-click **`install.command`** (the first time: right-click → Open). |
 | **Linux** | Run `sh install.sh` in a terminal. |
 
-The installer asks for your API key, copies the program to its own folder, and
-sets it to start whenever you sign in. Then there's one manual step: point your
-browser's download folder at the quarantine folder it prints:
+It asks for your API key, copies the program to its own folder, and sets it to
+start whenever you sign in.
+
+Then, on every system, there's one manual step: point your browser's download
+folder at the quarantine folder (the Windows setup shows it with a **Copy**
+button):
 
 | | Quarantine folder |
 |---|---|
@@ -50,10 +65,17 @@ To check that notifications work, run the program with `--test-notification`.
 
 ### Uninstall
 
-Windows: Settings → Apps → **VirusTotal Quarantine** → Uninstall. Anywhere:
-run `vt-quarantine --uninstall`. It stops the program, removes the autostart
-entry, and offers to delete your API key and downloaded packages. Files still in
-quarantine are left alone.
+**Windows:** Settings → Apps → **VirusTotal Quarantine** → Uninstall. This
+removes the program, its autostart entry, API key, log and downloaded packages.
+Python stays installed, because other programs may use it; it's listed
+separately in Apps if you want it gone too.
+
+**macOS and Linux:** run `vt-quarantine --uninstall`. It stops the program,
+removes the autostart entry, and offers to delete your API key and downloaded
+packages.
+
+Files still in quarantine are never deleted. Afterwards, set your browser's
+download folder back to Downloads.
 
 ## How it works
 
@@ -153,8 +175,16 @@ vt-quarantine --test-notification show a test notification with buttons
 vt-quarantine --version
 ```
 
-On Windows run these as `py vt-quarantine …` from the extracted folder, or
-`py "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" …` once installed.
+On Windows the setup covers installing, the API key (run it again to change
+the key) and uninstalling. For troubleshooting, run the installed program with
+the Python it uses, in a Command Prompt:
+
+```
+"%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --check
+```
+
+(If you already had Python, use yours; the Run entry under "Where things live"
+shows which one it is.)
 
 ## Where things live
 
@@ -180,6 +210,13 @@ install -Dm644 systemd/vt-quarantine.service ~/.config/systemd/user/vt-quarantin
 systemctl --user daemon-reload
 systemctl --user enable --now vt-quarantine.service
 ```
+
+## Building the Windows installers
+
+`python3 windows/build.py` makes both installers in `dist/`. It runs on Linux
+and needs `wixl` (from msitools) and `makensis` (NSIS) on the PATH; on
+Debian/Ubuntu: `apt install msitools nsis`. The pinned Python version and its
+hashes are at the top of [`windows/setup.nsi`](windows/setup.nsi).
 
 ## Configuration
 

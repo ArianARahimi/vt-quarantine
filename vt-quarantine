@@ -11,6 +11,7 @@ are downloaded on first run, checked against pinned SHA-256 hashes and kept in
 its own folder.
 """
 import argparse
+import contextlib
 import hashlib
 import html
 import io
@@ -159,9 +160,26 @@ def env_dir(var, default):
     return Path(value) if value and os.path.isabs(value) else default
 
 
+def known_folder(guid, fallback):
+    """A Windows known folder. Asked for directly rather than through %APPDATA% and
+    friends, which aren't the user's own when started by the installer service."""
+    import ctypes
+    folder_id = ctypes.create_string_buffer(uuid.UUID(guid).bytes_le, 16)
+    path = ctypes.c_wchar_p()
+    if ctypes.windll.shell32.SHGetKnownFolderPath(folder_id, 0, None, ctypes.byref(path)) == 0:
+        try:
+            return Path(path.value)
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(path)
+    return fallback
+
+
 if WINDOWS:
-    CONFIG_DIR = env_dir("APPDATA", HOME / "AppData" / "Roaming") / "vt-quarantine"
-    DATA_DIR = env_dir("LOCALAPPDATA", HOME / "AppData" / "Local") / "vt-quarantine"
+    HOME = known_folder("5E6C858F-0E22-4760-9AFE-EA3317B67173", HOME)  # FOLDERID_Profile
+    CONFIG_DIR = known_folder("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D",  # FOLDERID_RoamingAppData
+                              HOME / "AppData" / "Roaming") / "vt-quarantine"
+    DATA_DIR = known_folder("F1B32785-6FBA-4FCF-9D55-7B8E7F157091",  # FOLDERID_LocalAppData
+                            HOME / "AppData" / "Local") / "vt-quarantine"
 elif MACOS:
     CONFIG_DIR = DATA_DIR = HOME / "Library" / "Application Support" / "vt-quarantine"
 else:
@@ -172,17 +190,9 @@ else:
 def downloads_dir():
     """The user's Downloads folder, which may have been moved or renamed."""
     if WINDOWS:
-        import ctypes
         # FOLDERID_Downloads; Explorer lets users move this folder anywhere.
-        folder_id = ctypes.create_string_buffer(
-            uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le, 16)
-        path = ctypes.c_wchar_p()
-        if ctypes.windll.shell32.SHGetKnownFolderPath(folder_id, 0, None, ctypes.byref(path)) == 0:
-            try:
-                return Path(path.value)
-            finally:
-                ctypes.windll.ole32.CoTaskMemFree(path)
-    elif not MACOS:
+        return known_folder("374DE290-123F-4565-9164-39C4925E467B", HOME / "Downloads")
+    if not MACOS:
         user_dirs = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "user-dirs.dirs"
         try:
             m = re.search(r'^XDG_DOWNLOAD_DIR="([^"]*)"', user_dirs.read_text(), re.M)
@@ -759,6 +769,8 @@ limiter = RateLimiter(REQUESTS_PER_MINUTE)
 
 def vt(method, url, upload=None):
     """Rate-limited VirusTotal request; retries when the minute quota is hit."""
+    global api_key
+    api_key = read_key() or api_key  # a new key works without a restart
     if not url.startswith("http"):
         url = API + url
     parts = urllib.parse.urlsplit(url)
@@ -1066,6 +1078,7 @@ class Quarantine:
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\vt-quarantine"
+SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.exe/.msi)
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
 UNIT_FILE = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "systemd" / "user" / "vt-quarantine.service"
 UNIT_MARKER = "# Written by vt-quarantine --install"
@@ -1080,12 +1093,26 @@ def read_key():
         return ""
 
 
+def own_console():
+    """True when this process has a console window to itself (opened from the
+    "Enter key" notification), which closes as soon as it exits."""
+    if not WINDOWS:
+        return False
+    import ctypes
+    return ctypes.windll.kernel32.GetConsoleProcessList((ctypes.c_uint32 * 2)(), 2) == 1
+
+
 def set_key():
     import getpass
-    key = getpass.getpass("VirusTotal API key (from https://www.virustotal.com/gui/my-apikey, "
-                          "input hidden): ").strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", key):
-        sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
+    while True:
+        key = getpass.getpass("VirusTotal API key (from https://www.virustotal.com/gui/my-apikey, "
+                              "input hidden): ").strip()
+        if re.fullmatch(r"[0-9a-fA-F]{64}", key):
+            break
+        if not own_console():
+            sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
+        print("That doesn't look like a VirusTotal API key (64 hex characters). "
+              "Try again, or close this window.")
     KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -1093,6 +1120,9 @@ def set_key():
     if not WINDOWS:
         os.chmod(KEY_FILE, 0o600)
     print(f"Saved to {KEY_FILE}")
+    if own_console():
+        print("vt-quarantine starts checking downloads within a minute.")
+        time.sleep(3)
 
 
 def acquire_lock():
@@ -1221,8 +1251,22 @@ def stop_running():
         print(f"Could not stop the running copy ({e}).")
 
 
+def setup_installed():
+    if not WINDOWS:
+        return False
+    import winreg
+    try:
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, SETUP_KEY))
+        return True
+    except OSError:
+        return False
+
+
 def install():
     refuse_root()
+    if setup_installed():
+        sys.exit("vt-quarantine was installed with the setup program. Run it again to update,\n"
+                 "or remove it under Settings > Apps first.")
     if WINDOWS and "WindowsApps" in sys.executable:
         print("Warning: this is the Microsoft Store Python, which may keep the autostart and\n"
               "notification settings to itself. If vt-quarantine doesn't start at sign-in,\n"
@@ -1263,7 +1307,7 @@ def confirm(prompt):
         return False
 
 
-def uninstall():
+def uninstall(purge=False):
     if WINDOWS:
         import winreg
         try:
@@ -1288,10 +1332,12 @@ def uninstall():
         systemctl("daemon-reload", check=False)
     INSTALLED_SCRIPT.unlink(missing_ok=True)
     print("vt-quarantine is stopped and no longer starts at sign-in.")
-    if confirm("Also delete your API key, log and downloaded packages? [y/N] "):
+    if purge or confirm("Also delete your API key, log and downloaded packages? [y/N] "):
         KEY_FILE.unlink(missing_ok=True)
         for d in (CONFIG_DIR, DATA_DIR):
             shutil.rmtree(d, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            QUARANTINE.rmdir()  # only if empty: never delete downloads
         print("Deleted.")
     else:
         print(f"Your API key ({KEY_FILE}) and downloaded packages ({DATA_DIR}) are left in place.")
@@ -1357,10 +1403,21 @@ def run():
     while not read_key():
         if not warned:
             log(f"no API key at {KEY_FILE}")
-            notifier.notify("No VirusTotal API key",
-                            f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
-                            "Downloads stay quarantined until then.",
-                            "critical", "dialog-error")
+            if WINDOWS:
+                choice = notifier.notify("No VirusTotal API key",
+                                         "Downloads stay quarantined until you enter one.",
+                                         "critical", "dialog-error", [("key", "Enter key")])
+                if choice == "key":
+                    python = Path(sys.executable).with_name("python.exe")
+                    subprocess.Popen([str(python if python.exists() else sys.executable),
+                                      str(Path(__file__).resolve()), "--set-key"],
+                                     creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    open_url("https://www.virustotal.com/gui/my-apikey")
+            else:
+                notifier.notify("No VirusTotal API key",
+                                f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
+                                "Downloads stay quarantined until then.",
+                                "critical", "dialog-error")
             warned = True
         time.sleep(30)
     api_key = read_key()
@@ -1382,6 +1439,8 @@ def main():
     group.add_argument("--install", action="store_true",
                        help="set everything up and start at sign-in (asks for the API key if needed)")
     group.add_argument("--uninstall", action="store_true", help="stop, and stop starting at sign-in")
+    parser.add_argument("--purge", action="store_true",
+                        help="with --uninstall: also delete the API key, log and packages without asking")
     group.add_argument("--set-key", action="store_true", help="save your VirusTotal API key")
     group.add_argument("--check", action="store_true",
                        help="download missing packages and check that notifications work")
@@ -1390,8 +1449,10 @@ def main():
     args = parser.parse_args()
     if args.install:
         return install()
+    if args.purge and not args.uninstall:
+        parser.error("--purge only goes with --uninstall")
     if args.uninstall:
-        return uninstall()
+        return uninstall(args.purge)
     if args.set_key:
         return set_key()
     if args.check:
