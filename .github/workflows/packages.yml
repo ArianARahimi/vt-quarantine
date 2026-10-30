@@ -2,12 +2,13 @@ name: Installers and packages
 
 # Builds the Windows installers (setup.exe, .msi) and the Linux packages (.deb,
 # .rpm, Arch), and installs and removes each Linux package on the distributions it
-# is for. Pushing a version tag (v2.0.0) also puts them all on a draft release,
-# which nobody sees until it's published by hand. Running it by hand (Actions >
-# Installers and packages > Run workflow) only builds and tests.
+# is for. Runs on every push to master and stable: a commit can only go to stable
+# once this has passed on it. Pushing a version tag (v2.0.0) on stable also puts
+# them all on a draft release, which nobody sees until it's published by hand.
 
 on:
   push:
+    branches: [master, stable]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -186,6 +187,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the tag is on stable
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/stable ||
+            { echo "Releases are made from stable only; $GITHUB_REF_NAME isn't on it."; exit 1; }
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:

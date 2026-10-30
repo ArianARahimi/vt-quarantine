@@ -14,6 +14,11 @@ if [ "$(gh release view "$tag" -R "$repo" --json isDraft --jq .isDraft)" != true
     echo "$tag is not a draft release."
     exit 1
 fi
+# Only what's on stable is released ("behind" or "identical": the tag is part of it).
+case $(gh api "repos/$repo/compare/stable...$tag" --jq .status) in
+    behind|identical) ;;
+    *) echo "$tag isn't on the stable branch. Releases are made from stable only."; exit 1 ;;
+esac
 gh release download "$tag" -R "$repo" -D "$work"
 cd "$work"
 rm -f SHA256SUMS.sig
