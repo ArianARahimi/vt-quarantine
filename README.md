@@ -51,7 +51,8 @@ The program and its own copy of Python: python.org's official "embeddable"
 Python (about 12 MB), checked against a pinned SHA-256 when the installer is
 built. It's private to vt-quarantine: nothing is added to PATH or the registry
 for it, it doesn't touch any Python you installed yourself, and it's removed
-along with vt-quarantine. Installing downloads and runs nothing.
+along with vt-quarantine. The packages it needs for notifications come along
+as pinned wheels, so neither installing nor the first start downloads anything.
 
 Every release file is checked on VirusTotal before it's published, and a
 release that any engine flags isn't published.
@@ -214,9 +215,9 @@ this version": you're asked again only when the next one comes out.
 - **Dependencies are pinned.** Besides Python, it needs
   [jeepney](https://pypi.org/project/jeepney/) on Linux and the
   [winrt](https://pypi.org/project/winrt-runtime/) packages on Windows. They
-  come from your Linux distribution's package, or are downloaded from PyPI and
-  checked against SHA-256 hashes built into the program. No pip, nothing
-  installed system-wide.
+  come from your Linux distribution's package, inside the Windows `.msi`, or
+  are downloaded from PyPI, and are checked against SHA-256 hashes built into
+  the program either way. No pip, nothing installed system-wide.
 - **Quarantine is private.** On Linux and macOS only you can open the folder
   (on Windows your Downloads folder already is), and each file in it is locked
   until it's cleared.

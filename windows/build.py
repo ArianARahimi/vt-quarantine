@@ -4,7 +4,9 @@
     dist/vt-quarantine-<version>.msi   the program with its own copy of Python
 
 The Python is python.org's embeddable package, downloaded here once (and checked
-against PY_SHA256), so installing downloads and runs nothing. It's private to the
+against PY_SHA256), and the packages the program needs on Windows come along as
+the wheels pinned in it (checked against its own hashes). So installing downloads
+and runs nothing, and neither does the first start. The Python is private to the
 program: nothing else sees it, and it goes when the program is removed.
 
 Needs wixl (from msitools) on PATH, or set WIXL.
@@ -12,6 +14,8 @@ Arch: pacman -S msitools. Debian/Ubuntu: apt install wixl.
 """
 import hashlib
 import html
+import importlib.machinery
+import importlib.util
 import os
 import re
 import shutil
@@ -135,14 +139,45 @@ def python_files():
     return [("Pythonw" if n == "pythonw.exe" else f"Py{i}", n, out / n) for i, n in enumerate(names)]
 
 
+def program():
+    loader = importlib.machinery.SourceFileLoader("vtq", str(ROOT / "vt-quarantine"))
+    vtq = importlib.util.module_from_spec(importlib.util.spec_from_loader("vtq", loader))
+    loader.exec_module(vtq)
+    return vtq
+
+
+def wheel_files():
+    """The pinned Windows wheels for the bundled Python: [(file id, name, path)]."""
+    vtq = program()
+    cp = "cp" + "".join(PY_VERSION.split(".")[:2])
+    tags = [f"{cp}-{cp}-win_amd64", f"{cp}-abi3-win_amd64", "py3-none-any", "py2.py3-none-any"]
+    out = BUILD / "wheels"
+    out.mkdir(exist_ok=True)
+    found = []
+    for _module, name, files in vtq.WHEELS["win32"]:
+        by_tag = {"-".join(f[:-len(".whl")].split("-")[-3:]): (f, sha) for f, sha in files.items()}
+        filename, sha = next((by_tag[t] for t in tags if t in by_tag), (None, None))
+        if not filename:
+            sys.exit(f"no pinned {name} wheel for Python {PY_VERSION} on 64-bit Windows")
+        path = out / filename
+        if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+            print(f"Downloading {filename}")
+            path.write_bytes(vtq.download_wheel(name, filename, sha))  # checks the hash
+        found.append((f"Whl{len(found)}", filename, path))
+    return found
+
+
 # --- MSI ---------------------------------------------------------------------------
 
-def wxs(ver, icon, script, python):
+def wxs(ver, icon, script, python, wheels):
     nl = "\n"
     py_files = nl.join(f'            <File Id="{fid}" Name={quoteattr(name)} Source={quoteattr(str(path))}/>'
                        for fid, name, path in python)
-    # A new Python is a new component, so an upgrade replaces it cleanly.
+    whl_files = nl.join(f'            <File Id="{fid}" Name={quoteattr(name)} Source={quoteattr(str(path))}/>'
+                        for fid, name, path in wheels)
+    # A new Python, or new wheels, is a new component, so an upgrade replaces it cleanly.
     py_guid = uuid.uuid5(PRODUCT_NS, f"python {PY_ZIP}")
+    whl_guid = uuid.uuid5(PRODUCT_NS, "wheels " + " ".join(name for _, name, _ in wheels))
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="{{{uuid.uuid5(PRODUCT_NS, ver)}}}" Name="VirusTotal Quarantine" Language="1033"
@@ -179,6 +214,14 @@ def wxs(ver, icon, script, python):
               <RemoveFolder Id="RemovePythonDir" On="uninstall"/>
             </Component>
           </Directory>
+          <Directory Id="WHEELSDIR" Name="wheels">
+            <Component Id="Wheels" Guid="{{{whl_guid}}}">
+              <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Wheels" Type="string"
+                             Value="{whl_guid}" KeyPath="yes"/>
+{whl_files}
+              <RemoveFolder Id="RemoveWheelsDir" On="uninstall"/>
+            </Component>
+          </Directory>
         </Directory>
       </Directory>
     </Directory>
@@ -202,7 +245,7 @@ def wxs(ver, icon, script, python):
       <Custom Action="StopForUpgrade" Before="RemoveFiles">REMOVE="ALL" AND UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="Start" After="InstallFinalize">NOT REMOVE</Custom>
     </InstallExecuteSequence>
-    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/></Feature>
+    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/><ComponentRef Id="Wheels"/></Feature>
   </Product>
 </Wix>
 """
@@ -226,7 +269,7 @@ def main():
     make_icon(icon)
     msi = DIST / f"vt-quarantine-{ver}.msi"
     source = BUILD / "wxs"
-    source.write_text(wxs(ver, icon, ROOT / "vt-quarantine", python_files()))
+    source.write_text(wxs(ver, icon, ROOT / "vt-quarantine", python_files(), wheel_files()))
     run([os.environ.get("WIXL", "wixl"), "-a", "x64", "-o", msi, source])
     print(f"Built {msi}")
 

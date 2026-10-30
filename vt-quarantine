@@ -78,8 +78,9 @@ PARTIAL_SUFFIXES = (".part", ".crdownload", ".opdownload", ".download", ".partia
 IGNORED_NAMES = {"desktop.ini", "thumbs.db", ".directory", ".ds_store"}
 
 # Third-party packages, pinned to exact wheels: (module to import, PyPI name,
-# {wheel filename: SHA-256}). They are fetched from PyPI on first run, checked
-# against these hashes and unpacked into lib_dir(); nothing is installed system-wide.
+# {wheel filename: SHA-256}). They are fetched from PyPI on first run (the Windows
+# .msi brings them along in BUNDLED_WHEELS), checked against these hashes and unpacked
+# into lib_dir(); nothing is installed system-wide.
 # macOS needs none.
 WHEELS = {
     'linux': [
@@ -219,6 +220,7 @@ KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password 
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
 LIB_ROOT = DATA_DIR / "lib"
+BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the .msi
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
 INSTALLED_SCRIPT = DATA_DIR / "vt-quarantine.py"
 
@@ -372,6 +374,18 @@ def pin_id():
                           .encode()).hexdigest()
 
 
+def bundled_wheel(filename, sha):
+    """The wheel as the Windows installer brought it, if it's there and intact."""
+    try:
+        data = (BUNDLED_WHEELS / filename).read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(data).hexdigest() != sha:
+        log(f"bundled {filename} does not match its pinned SHA-256; downloading it instead")
+        return None
+    return data
+
+
 def download_wheel(name, filename, sha):
     """Fetch one wheel from PyPI and check its hash; returns the bytes."""
     project = re.sub(r"[-_.]+", "-", name).lower()
@@ -451,8 +465,11 @@ def install_requirements():
                 if not picked:
                     raise RuntimeError(f"no pinned {name} wheel for this Python "
                                        f"({platform.python_version()}, {platform.machine()})")
-                log(f"downloading {picked[0]}")
-                unpack_wheel(download_wheel(name, *picked), picked[0], staging)
+                data = bundled_wheel(*picked)
+                if data is None:
+                    log(f"downloading {picked[0]}")
+                    data = download_wheel(name, *picked)
+                unpack_wheel(data, picked[0], staging)
             try:
                 os.replace(staging, target)
             except OSError:
