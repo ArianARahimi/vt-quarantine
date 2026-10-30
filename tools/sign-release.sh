@@ -77,14 +77,24 @@ for name in sys.argv[2:]:
     report = api(f"files/{sha}")
     if report is None:
         analysis = upload(name, data)
-        while api(f"analyses/{analysis}")["data"]["attributes"]["status"] != "completed":
+        while True:
             time.sleep(30)
+            status = api(f"analyses/{analysis}")  # None until VirusTotal lists it
+            if status and status["data"]["attributes"]["status"] == "completed":
+                break
+    # The file's own report can lag behind the analysis (or still be queued):
+    # wait for one with a date and some engines in it.
+    for _ in range(20):
         report = api(f"files/{sha}")
-    attrs = report["data"]["attributes"]
-    stats = attrs["last_analysis_stats"]
-    flags = {engine: r["result"] for engine, r in attrs["last_analysis_results"].items()
+        attrs = report["data"]["attributes"] if report else {}
+        stats = attrs.get("last_analysis_stats", {})
+        if attrs.get("last_analysis_date") and stats.get("undetected", 0) + stats.get("harmless", 0) + \
+                stats.get("malicious", 0) + stats.get("suspicious", 0):
+            break
+        time.sleep(30)
+    flags = {engine: r["result"] for engine, r in attrs.get("last_analysis_results", {}).items()
              if r["category"] in ("malicious", "suspicious")}
-    total = stats["malicious"] + stats["suspicious"] + stats["harmless"] + stats["undetected"]
+    total = sum(stats.get(k, 0) for k in ("malicious", "suspicious", "harmless", "undetected"))
     print(f"  {len(flags)}/{total}  {name}" + (f"  {flags}" if flags else ""))
     if flags or total == 0:
         bad.append(f"{name}: https://www.virustotal.com/gui/file/{sha}")
