@@ -1068,9 +1068,9 @@ class Quarantine:
             choice = notifier.notify(summary, body, "critical", icon, actions)
             if choice == "report":
                 open_url(report_url(sha))
-                # Re-ask without the report button, after a pause so the new popup
-                # doesn't land under the cursor and catch a repeated click.
-                actions.remove(("report", "Show report"))
+                # Ask again with the same buttons in the same places: if they moved
+                # up, "Move to Downloads" would land where "Delete" was. The pause
+                # keeps a repeated click from landing on the new popup.
                 time.sleep(2)
                 continue
             if choice == "release":
