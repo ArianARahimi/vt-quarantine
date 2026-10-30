@@ -40,7 +40,7 @@ import zipfile
 from pathlib import Path
 from queue import Queue
 
-VERSION = "2.1.1"
+VERSION = "2.1.2"
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 HOME = Path.home()
