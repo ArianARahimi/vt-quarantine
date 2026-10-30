@@ -9,8 +9,8 @@ entirely through notifications. The only thing it needs is Python; on Windows
 the setup installs that for you if it's missing.
 
 <p align="center">
-  <img src="docs/notifications.png" width="336"
-       alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Release / Delete / Open report buttons, and a clean file released automatically">
+  <img src="docs/notifications.png" width="332"
+       alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Show report / Delete buttons, and a clean file moved to Downloads automatically, with an Open folder button">
 </p>
 
 ## Install
