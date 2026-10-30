@@ -1,6 +1,6 @@
 name: Installers and packages
 
-# Builds the Windows installers (setup.exe, .msi) and the Linux packages (.deb,
+# Builds the Windows installer (.msi) and the Linux packages (.deb,
 # .rpm, Arch), and installs and removes each Linux package on the distributions it
 # is for. Runs on every push to master and stable: a commit can only go to stable
 # once this has passed on it. Pushing a version tag (v2.0.0) on stable also puts
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   windows:
     runs-on: ubuntu-24.04
-    # Debian 13 has the wixl (0.106) and NSIS (3.11) the installers are tested with.
+    # Debian 13 has the wixl (0.106) the installer is tested with.
     container: debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
     timeout-minutes: 15
     steps:
@@ -32,8 +32,8 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 wixl nsis
-          dpkg-query -W wixl nsis
+          apt-get install -y --no-install-recommends python3 wixl ca-certificates
+          dpkg-query -W wixl
 
       - name: Check the tag matches the version
         if: github.ref_type == 'tag'
@@ -46,22 +46,17 @@ jobs:
             exit 1
           fi
 
+      # Downloads python.org's embeddable Python, checked against its pinned SHA-256.
       - name: Build the .msi
-        run: python3 windows/build.py msi
+        run: python3 windows/build.py
 
-      # The .msi gets signed here, before setup.exe carries it inside.
-
-      - name: Build setup.exe
-        run: python3 windows/build.py setup
-
-      # setup.exe gets signed here.
+      # The .msi gets signed here.
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows
           path: |
             dist/*.msi
-            dist/*.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -214,7 +209,7 @@ jobs:
           mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
           gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "$TAG" --notes-file - <<EOF
-          **Windows:** download and run \`vt-quarantine-$v-setup.exe\`. The \`.msi\` is for deployment tools and needs Python already installed.
+          **Windows:** download and run \`vt-quarantine-$v.msi\`. It brings its own Python and needs no administrator rights.
 
           **Linux:** install the package for your distribution, then run \`vt-quarantine --install\` as yourself (it asks for your API key):
           - Debian, Ubuntu: \`sudo apt install ./vt-quarantine_$v-1_all.deb\`

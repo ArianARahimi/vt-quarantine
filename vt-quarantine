@@ -1398,6 +1398,9 @@ RELEASE_KEYS = (
 )
 NO_AUTO_UPDATE = CONFIG_DIR / "no-auto-update"
 UPDATED_MARKER = DATA_DIR / "updated"
+# Windows: an update's .msi removes this copy the way an uninstall would. Windows says
+# it's an upgrade (so the data stays), but not every Windows Installer does (Wine).
+UPDATING_MARKER = DATA_DIR / "updating"
 DECLINED_UPDATE = CONFIG_DIR / "declined-update"  # a version the user said no to
 
 
@@ -1498,7 +1501,7 @@ def update_kind():
     if packaged():
         return "package"
     if WINDOWS and setup_installed():
-        return "setup"
+        return "msi"
     if script == INSTALLED_SCRIPT.resolve():
         return "script"
     return None
@@ -1517,8 +1520,8 @@ def update_asset(kind, version):
     v = "{}.{}.{}".format(*version)
     if kind == "script":
         return f"vt-quarantine-{v}.py"
-    if kind == "setup":
-        return f"vt-quarantine-{v}-setup.exe"
+    if kind == "msi":
+        return f"vt-quarantine-{v}.msi"
     return {"deb": f"vt-quarantine_{v}-1_all.deb", "rpm": f"vt-quarantine-{v}-1.noarch.rpm",
             "arch": f"vt-quarantine-{v}-1-any.pkg.tar.zst"}.get(package_format())
 
@@ -1560,7 +1563,7 @@ def find_update(kind, skip=None):
 
 class Updater:
     """Checks for a new release once a day. Installs it right away where it can do
-    that unattended (this program's own copy, or the Windows setup); a Linux
+    that unattended (this program's own copy, or the Windows installer); a Linux
     package needs the administrator password, so that asks first. Restarting is
     left to run(), which does it while nothing is being checked."""
 
@@ -1595,12 +1598,18 @@ class Updater:
             tmp = INSTALLED_SCRIPT.with_name(INSTALLED_SCRIPT.name + ".new")
             tmp.write_bytes(data)
             os.replace(tmp, INSTALLED_SCRIPT)
-        elif kind == "setup":
-            setup = DATA_DIR / name
-            setup.write_bytes(data)
+        elif kind == "msi":
+            msi = DATA_DIR / name
+            msi.write_bytes(data)
             UPDATED_MARKER.write_text(v)
-            # Its .msi stops this copy and starts the new one.
-            subprocess.Popen([str(setup), "/S"], close_fds=True, cwd=str(DATA_DIR),
+            UPDATING_MARKER.write_text(v)
+            # It stops this copy and starts the new one; cmd starts it again once the
+            # install is done, should that not have worked (a second copy just exits).
+            system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+            pythonw = Path(sys.executable).with_name("pythonw.exe")
+            steps = (f'start "" /wait "{system / "msiexec.exe"}" /i "{msi}" /qn /norestart'
+                     f' & start "" "{pythonw}" "{INSTALLED_SCRIPT}"')
+            subprocess.Popen(f'"{system / "cmd.exe"}" /d /s /c "{steps}"', close_fds=True, cwd=str(DATA_DIR),
                              creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
             log(f"installing version {v}")
             return
@@ -2047,7 +2056,7 @@ def undo_browser_setup():
 # Windows account (DPAPI), on macOS in the Keychain, on Linux in the Secret Service
 # (KWallet, GNOME Keyring). So it's unreadable from a copied disk, a backup or another
 # account. Without a store it stays in a file only this user can read. A key put into
-# that file (by hand, or by the Windows setup) is moved into the store.
+# that file (by hand, or by the old Windows setup) is moved into the store.
 
 class KeyStoreLocked(Exception):
     """The key is in a password store that's locked, and it wasn't unlocked."""
@@ -2335,7 +2344,7 @@ def key_changed():
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\vt-quarantine"
-SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.exe/.msi)
+SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.msi)
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
 UNIT_FILE = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "systemd" / "user" / "vt-quarantine.service"
 UNIT_MARKER = "# Written by vt-quarantine --install"
@@ -2533,8 +2542,8 @@ def setup_installed():
 def install():
     refuse_root()
     if setup_installed():
-        sys.exit("vt-quarantine was installed with the setup program. Run it again to update,\n"
-                 "or remove it under Settings > Apps first.")
+        sys.exit("vt-quarantine was installed with its Windows installer (.msi). Run a newer one to\n"
+                 "update, or remove it under Settings > Apps first.")
     if WINDOWS and "WindowsApps" in sys.executable:
         print("Warning: this is the Microsoft Store Python, which may keep the autostart and\n"
               "notification settings to itself. If vt-quarantine doesn't start at sign-in,\n"
@@ -2579,7 +2588,16 @@ Log: {logs}
 {removal}""")
 
 
+def updating():
+    """An update this copy started within the last quarter of an hour (Windows)."""
+    try:
+        return time.time() - UPDATING_MARKER.stat().st_mtime < 15 * 60
+    except OSError:
+        return False
+
+
 def uninstall(keep_data=False):
+    keep_data = keep_data or updating()
     if WINDOWS:
         import winreg
         try:
@@ -2663,6 +2681,7 @@ def run():
         log("already running")
         return 0
     (DATA_DIR / "pid").write_text(str(os.getpid()))
+    UPDATING_MARKER.unlink(missing_ok=True)  # it went through, or didn't
     make_quarantine()
 
     while not install_requirements():
@@ -2710,9 +2729,10 @@ def run():
         updated_to = None
     if updated_to == VERSION:  # not when the update didn't go through
         threading.Thread(target=tell_updated, daemon=True).start()
-    for old in DATA_DIR.glob("vt-quarantine-*-setup.exe"):  # left by Windows updates
-        with contextlib.suppress(OSError):
-            old.unlink()
+    for pattern in ("vt-quarantine-*.msi", "vt-quarantine-*-setup.exe"):  # left by Windows updates
+        for old in DATA_DIR.glob(pattern):
+            with contextlib.suppress(OSError):
+                old.unlink()
     if not BROWSER_SETUP.exists():  # the first run
         threading.Thread(target=first_run_browser_setup, daemon=True).start()
     updater = Updater()

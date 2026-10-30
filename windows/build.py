@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""Build the Windows installers on Linux (or anywhere with the tools):
+"""Build the Windows installer on Linux (or anywhere with the tools):
 
-    dist/vt-quarantine-<version>.msi        the program itself (needs Python 3.11+)
-    dist/vt-quarantine-<version>-setup.exe  installs Python first if it's missing,
-                                            asks for the API key, then runs the .msi
+    dist/vt-quarantine-<version>.msi   the program with its own copy of Python
 
-Needs wixl (from msitools) and makensis (NSIS) on PATH, or set WIXL / MAKENSIS.
-Arch: pacman -S msitools, nsis from the AUR. Debian/Ubuntu: apt install wixl nsis.
+The Python is python.org's embeddable package, downloaded here once (and checked
+against PY_SHA256), so installing downloads and runs nothing. It's private to the
+program: nothing else sees it, and it goes when the program is removed.
 
-    build.py          both
-    build.py msi      just the .msi
-    build.py setup    just setup.exe, around the .msi already in dist/ (so the
-                      .msi can be signed first: setup.exe carries it inside)
+Needs wixl (from msitools) on PATH, or set WIXL.
+Arch: pacman -S msitools. Debian/Ubuntu: apt install wixl.
 """
+import hashlib
 import html
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
+import urllib.request
 import uuid
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -33,7 +34,11 @@ UPGRADE_CODE = "{6F0C5D2B-8E4A-4B7F-9C1D-3A5E7B9D1F24}"
 # Per-version product codes, derived so the same version always gets the same one.
 PRODUCT_NS = uuid.UUID("2C9A4E61-7B3D-4F85-A0E2-5D8C1B6F9A37")
 COMPONENT_GUID = "{A47E2C19-5B8D-4E3F-9F61-0C2D4B8A6E15}"
-OLDEST, NEWEST = 11, 19  # Python 3.x minor versions to look for
+
+PY_VERSION = "3.14.10"
+PY_ZIP = f"python-{PY_VERSION}-embed-amd64.zip"
+PY_URL = f"https://www.python.org/ftp/python/{PY_VERSION}/{PY_ZIP}"
+PY_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
 
 
 def version():
@@ -108,41 +113,36 @@ def make_icon(path):
     path.write_bytes(head + entries + b"".join(d for _, d in images))
 
 
+# --- Python -------------------------------------------------------------------------
+
+def python_files():
+    """The embeddable Python, unpacked: [(file id, name, path)], pythonw.exe as "Pythonw"."""
+    cached = BUILD / PY_ZIP
+    if not cached.exists() or hashlib.sha256(cached.read_bytes()).hexdigest() != PY_SHA256:
+        print(f"Downloading {PY_URL}")
+        with urllib.request.urlopen(PY_URL, timeout=60) as r:
+            data = r.read()
+        if hashlib.sha256(data).hexdigest() != PY_SHA256:
+            sys.exit(f"{PY_ZIP} from python.org isn't the file it should be (SHA-256 mismatch)")
+        cached.write_bytes(data)
+    out = BUILD / "python"
+    shutil.rmtree(out, ignore_errors=True)
+    with zipfile.ZipFile(cached) as z:
+        names = sorted(z.namelist())
+        if any("/" in n or "\\" in n or n.startswith(".") for n in names):
+            sys.exit(f"{PY_ZIP} has folders in it, which this build doesn't expect")
+        z.extractall(out)
+    return [("Pythonw" if n == "pythonw.exe" else f"Py{i}", n, out / n) for i, n in enumerate(names)]
+
+
 # --- MSI ---------------------------------------------------------------------------
 
-def python_searches():
-    """Registry places Python installs list themselves (PEP 514), newest first,
-    this user's own before everyone's."""
-    found = []
-    for minor in range(NEWEST, OLDEST - 1, -1):
-        for suffix in ("", "-arm64", "-32"):
-            tag = f"3.{minor}{suffix}"
-            for root, win64 in (("HKCU", False), ("HKLM", True), ("HKLM", False)):
-                found.append((tag, root, win64))
-    return found
-
-
-def wxs(ver, icon, script):
-    props, picks, ui, execute = [], [], [], []
-    prev = "PickSaved"
-    for i, (tag, root, win64) in enumerate(python_searches()):
-        prop = f"PYW{i}"
-        props.append(
-            f'    <Property Id="{prop}">\n'
-            f'      <RegistrySearch Id="Py{i}" Root="{root}" Key="Software\\Python\\PythonCore\\{tag}\\InstallPath"'
-            f' Name="WindowedExecutablePath" Type="raw"{" Win64=" + quoteattr("yes") if win64 else ""}/>\n'
-            f'    </Property>')
-        picks.append(f'    <CustomAction Id="Pick{i}" Property="PYTHONW" Value="[{prop}]"/>')
-        # The Microsoft Store Python keeps registry writes to itself, so
-        # notifications and autostart wouldn't work from it.
-        cond = f'NOT PYTHONW AND {prop} AND NOT ({prop} ~&gt;&lt; "\\WindowsApps\\")'
-        for seq in (ui, execute):
-            seq.append(f'      <Custom Action="Pick{i}" After="{prev}">{cond}</Custom>')
-        prev = f"Pick{i}"
-    for seq in (ui, execute):
-        # Uninstalling uses the Python it was installed with, while that still exists.
-        seq.insert(0, '      <Custom Action="PickSaved" After="AppSearch">Installed AND NOT PYTHONW AND SAVEDPYTHONW</Custom>')
+def wxs(ver, icon, script, python):
     nl = "\n"
+    py_files = nl.join(f'            <File Id="{fid}" Name={quoteattr(name)} Source={quoteattr(str(path))}/>'
+                       for fid, name, path in python)
+    # A new Python is a new component, so an upgrade replaces it cleanly.
+    py_guid = uuid.uuid5(PRODUCT_NS, f"python {PY_ZIP}")
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="{{{uuid.uuid5(PRODUCT_NS, ver)}}}" Name="VirusTotal Quarantine" Language="1033"
@@ -157,47 +157,52 @@ def wxs(ver, icon, script):
     <Property Id="ARPNOREPAIR" Value="1"/>
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/ArianARahimi/vt-quarantine"/>
     <Property Id="ARPHELPLINK" Value="https://github.com/ArianARahimi/vt-quarantine#readme"/>
-    <Property Id="SAVEDPYTHONW">
-      <RegistrySearch Id="Saved" Root="HKCU" Key="Software\\vt-quarantine" Name="Python" Type="raw"/>
-    </Property>
-{nl.join(props)}
-    <CustomAction Id="PickSaved" Property="PYTHONW" Value="[SAVEDPYTHONW]"/>
-{nl.join(picks)}
-    <Condition Message="VirusTotal Quarantine needs Python 3.{OLDEST} or newer from python.org. Use vt-quarantine-{ver}-setup.exe, which installs it for you, or install Python from https://www.python.org/downloads/ first.">Installed OR PYTHONW</Condition>
+    <Condition Message="VirusTotal Quarantine needs 64-bit Windows.">Installed OR VersionNT64</Condition>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="vt-quarantine">
           <Component Id="Main" Guid="{COMPONENT_GUID}">
             <File Id="Script" Name="vt-quarantine.py" Source={quoteattr(str(script))}/>
-            <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Python" Type="string" Value="[PYTHONW]" KeyPath="yes"/>
+            <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Python" Type="string" Value="[#Pythonw]" KeyPath="yes"/>
             <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Version" Type="string" Value="{ver}"/>
             <RegistryValue Root="HKCU" Key="Software\\Microsoft\\Windows\\CurrentVersion\\Run" Name="vt-quarantine"
-                           Type="string" Value="&quot;[PYTHONW]&quot; &quot;[#Script]&quot;"/>
+                           Type="string" Value="&quot;[#Pythonw]&quot; &quot;[#Script]&quot;"/>
             <RegistryValue Root="HKCU" Key="Software\\Classes\\AppUserModelId\\vt-quarantine" Name="DisplayName"
                            Type="string" Value="VirusTotal Quarantine"/>
             <RemoveFolder Id="RemoveInstallDir" On="uninstall"/>
           </Component>
+          <Directory Id="PYTHONDIR" Name="python">
+            <Component Id="Python" Guid="{{{py_guid}}}">
+              <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="PythonVersion" Type="string"
+                             Value="{PY_VERSION}" KeyPath="yes"/>
+{py_files}
+              <RemoveFolder Id="RemovePythonDir" On="uninstall"/>
+            </Component>
+          </Directory>
         </Directory>
       </Directory>
     </Directory>
+    <CustomAction Id="SetPython" Property="PYTHONW" Value="[#Pythonw]"/>
     <!-- Stop the running copy; on a real uninstall also undo the browser setup and delete
-         the API key, settings, log and downloaded packages (an upgrade keeps them).
-         Never fails the uninstall (Python may be gone already). -->
+         the API key, settings, log and downloaded packages (an upgrade keeps them). -->
     <CustomAction Id="Purge" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot; --uninstall --purge"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
     <CustomAction Id="StopForUpgrade" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot; --uninstall --keep-data"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
     <CustomAction Id="Start" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot;" Return="asyncNoWait"/>
+    <!-- Started from the installer window too: whether starting it from the install
+         itself works on real Windows is untested (a second copy just exits). -->
     <InstallUISequence>
-{nl.join(ui)}
+      <Custom Action="SetPython" After="CostFinalize"/>
+      <Custom Action="Start" After="ExecuteAction">NOT REMOVE</Custom>
     </InstallUISequence>
     <InstallExecuteSequence>
-{nl.join(execute)}
+      <Custom Action="SetPython" After="CostFinalize"/>
       <Custom Action="Purge" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="StopForUpgrade" Before="RemoveFiles">REMOVE="ALL" AND UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="Start" After="InstallFinalize">NOT REMOVE</Custom>
     </InstallExecuteSequence>
-    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/></Feature>
+    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/></Feature>
   </Product>
 </Wix>
 """
@@ -213,27 +218,17 @@ def run(cmd):
 
 
 def main():
-    what = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if len(sys.argv) > 2 or what not in ("all", "msi", "setup"):
+    if len(sys.argv) > 2 or sys.argv[1:] not in ([], ["msi"]):
         sys.exit(__doc__)
     ver = version()
     BUILD.mkdir(parents=True, exist_ok=True)
     icon = BUILD / "vt-quarantine.ico"
     make_icon(icon)
     msi = DIST / f"vt-quarantine-{ver}.msi"
-    exe = DIST / f"vt-quarantine-{ver}-setup.exe"
-    if what in ("all", "msi"):
-        source = BUILD / "wxs"
-        source.write_text(wxs(ver, icon, ROOT / "vt-quarantine"))
-        run([os.environ.get("WIXL", "wixl"), "-o", msi, source])
-        print(f"Built {msi}")
-    if what in ("all", "setup"):
-        if not msi.exists():
-            sys.exit(f"{msi} is missing: build it first (build.py msi)")
-        run([os.environ.get("MAKENSIS", "makensis"), "-V2", "-INPUTCHARSET", "UTF8",
-             f"-DVERSION={ver}", f"-DMSI={msi}", f"-DICON={icon}", f"-DOUTFILE={exe}",
-             f"-DOLDEST={OLDEST}", f"-DNEWEST={NEWEST}", HERE / "setup.nsi"])
-        print(f"Built {exe}")
+    source = BUILD / "wxs"
+    source.write_text(wxs(ver, icon, ROOT / "vt-quarantine", python_files()))
+    run([os.environ.get("WIXL", "wixl"), "-a", "x64", "-o", msi, source])
+    print(f"Built {msi}")
 
 
 if __name__ == "__main__":

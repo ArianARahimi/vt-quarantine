@@ -31,29 +31,32 @@
 
 You need a free **VirusTotal API key**:
 [sign up](https://www.virustotal.com/gui/join-us), then copy the key from
-[your API key page](https://www.virustotal.com/gui/my-apikey). The installer
-asks for it.
+[your API key page](https://www.virustotal.com/gui/my-apikey). vt-quarantine
+asks for it when it first starts.
 
 ### Windows
 
-Download **`vt-quarantine-<version>-setup.exe`** from
+Download **`vt-quarantine-<version>.msi`** from
 [Releases](https://github.com/ArianARahimi/vt-quarantine/releases/latest) and
-run it. It installs for your account only, without administrator rights.
+run it. It installs for your account only, without administrator rights, and
+starts right away: a notification asks for your API key (**Enter key**).
 
 Windows may warn that the publisher is unknown: click **More info → Run
 anyway**.
 
 <details>
-<summary>What setup installs, and the <code>.msi</code> for deployment tools</summary>
+<summary>What the <code>.msi</code> installs</summary>
 
-If there's no Python 3.11 or newer, setup downloads Python from python.org,
-checks it against a pinned SHA-256, and installs only the parts it needs: no
-launcher, file associations, shortcuts or PATH changes. Uninstalling
-vt-quarantine leaves Python alone, because other programs may use it.
+The program and its own copy of Python: python.org's official "embeddable"
+Python (about 12 MB), checked against a pinned SHA-256 when the installer is
+built. It's private to vt-quarantine: nothing is added to PATH or the registry
+for it, it doesn't touch any Python you installed yourself, and it's removed
+along with vt-quarantine. Installing downloads and runs nothing.
 
-For deployment tools (Intune, Group Policy, `msiexec /i … /qn`) there's also
-`vt-quarantine-<version>.msi`. It installs the same thing but needs Python to be
-there already.
+Every release file is checked on VirusTotal before it's published, and a
+release that any engine flags isn't published.
+
+Deployment tools can install it silently: `msiexec /i vt-quarantine-<version>.msi /qn`.
 </details>
 
 ### Linux
@@ -183,7 +186,7 @@ even someone who took over the GitHub account couldn't push code to you.
 
 | Installed with | How it updates |
 |---|---|
-| Windows setup or `.msi` | Silently: downloads the new setup and runs it |
+| Windows `.msi` | Silently: downloads the new `.msi` and installs it |
 | `install.sh`, `install.command` or `--install` | Silently: replaces itself and restarts, never in the middle of a check |
 | Linux package | Asks first, because installing needs your password |
 
@@ -255,11 +258,9 @@ unverified:
   Enter key), notifications that stay on screen until answered, and what
   happens when one is dismissed or goes to the notification centre are all
   untested. This is the part most likely to need fixes.
-- **Automatic updates haven't run on Windows yet.** Downloading the new setup
-  and running it silently is covered by unit tests only.
-- **Keeping the API key encrypted (DPAPI) has only run under Wine.** Setup
-  writes the key you type to a file, and the program moves it into protected
-  storage the first time it starts.
+- **Automatic updates have only run under Wine.** Downloading the new `.msi`
+  and installing it silently passed there, with the program's own code.
+- **Keeping the API key encrypted (DPAPI) has only run under Wine.**
 - **Waiting for fullscreen games hasn't run on real Windows.** It asks Windows
   the same question Windows asks before showing its own notifications
   (`SHQueryUserNotificationState`), which Wine doesn't answer the way Windows
@@ -267,32 +268,30 @@ unverified:
 - **Locking files and the browser setup haven't run on real Windows.** Locking
   uses `icacls` to deny reading, and Copy folder uses PowerShell; under Wine
   both are only partly there. Both are covered by unit tests only.
-- **The installers are unsigned.** SmartScreen shows "Windows protected your
-  PC" (More info → Run anyway) until they're code-signed.
-- **Only 64-bit Intel/AMD Windows was tested.** On ARM64 and 32-bit Windows,
-  setup downloads a different Python installer, and that path has never run.
-- **Starting right after an `.msi` install is untested.** On real Windows that
-  runs inside the Windows Installer service, which Wine doesn't reproduce. If
-  it doesn't start, it will at the next sign-in. `setup.exe` starts it a second
-  way, so it's unaffected.
-- **Upgrading with the `.msi` alone lost the API key under Wine.** Wine doesn't
-  tell the old version it's being upgraded, so its uninstall step deletes the
-  key and downloaded packages. Real Windows should pass this on, but that's
-  untested. `setup.exe` puts the key back either way.
+- **The installer is unsigned.** SmartScreen shows "Windows protected your
+  PC" (More info → Run anyway) until it's code-signed.
+- **64-bit Windows only.** The `.msi` carries 64-bit Python and refuses to
+  install on 32-bit Windows. Windows on ARM should run it through emulation,
+  but that's untested.
+- **Starting right after installing is untested on real Windows.** The `.msi`
+  starts it from the install and again from the installer window, and an
+  automatic update starts it once more after installing; under Wine only the
+  silent paths could be tested. If it doesn't start, it will at the next
+  sign-in.
+- **Upgrading by running a newer `.msi` by hand relies on Windows saying it's
+  an upgrade.** Wine doesn't, so there the old version's uninstall step deleted
+  the API key. Automatic updates leave the program a note and keep everything
+  either way. Upgrading a 2.1.2-or-older setup.exe install by hand lost the key
+  under Wine too (a notification then asks for it again).
 - **The "Enter key" window is untested.** If no API key is set, a notification
   button opens a window to type it in, which depends on notifications working.
-- **Untested setup controls:** the **Copy** button on the last page, and the
-  "Get a free API key" and "Help for other browsers" links.
-- **Reinstalling the same version from a different build is untested**
-  (Windows Installer error 1638, which `setup.exe` tries to handle).
-- **The `.msi` may miss a Python installed "for all users".** It searches the
-  64-bit registry from a 32-bit package, and whether Windows allows that is
-  untested. `setup.exe` is unaffected.
-- **Uninstalling after Python has been removed leaves files behind.** Delete
-  `%APPDATA%\vt-quarantine` and `%LOCALAPPDATA%\vt-quarantine` by hand.
+- **Windows Installer's window without dialogs is untested.** The `.msi` has no
+  pages of its own; Windows should show only a progress bar.
+- **Version 2.1.2 and older don't update to 2.2.0 by themselves on Windows.**
+  They look for a `setup.exe`, which releases no longer have. Install the `.msi`
+  over them once.
 - **Under Wine only:** Apps-list entries are stored in a different registry
-  location, and the last setup page sometimes drew its bottom line late.
-  Neither is expected on real Windows.
+  location. Not expected on real Windows.
 </details>
 
 <details>
@@ -331,16 +330,13 @@ vt-quarantine --forget-safe       forget the files you marked safe
 vt-quarantine --version
 ```
 
-On Windows, setup covers installing, changing the API key (run it again) and
-uninstalling. To troubleshoot, run the installed program with its Python in a
-Command Prompt:
+On Windows, run these with the program's own Python in a Command Prompt, for
+example to change the API key or to troubleshoot:
 
 ```
-"%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --check
+"%LOCALAPPDATA%\vt-quarantine\python\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --set-key
+"%LOCALAPPDATA%\vt-quarantine\python\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --check
 ```
-
-If you already had Python, use yours. The autostart entry below shows which
-one it is.
 </details>
 
 <details>
@@ -348,7 +344,7 @@ one it is.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `/usr/bin/vt-quarantine` (package) or `~/.local/share/vt-quarantine/` |
+| Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` (its Python in `python\`) | `~/Library/Application Support/vt-quarantine/` | `/usr/bin/vt-quarantine` (package) or `~/.local/share/vt-quarantine/` |
 | API key | `%APPDATA%\vt-quarantine\api_key.dpapi` (encrypted for your account) | Keychain, item "vt-quarantine" | KWallet / GNOME Keyring, or `~/.config/vt-quarantine/api_key` without one |
 | Files marked safe | `%APPDATA%\vt-quarantine\marked-safe` | `~/Library/Application Support/vt-quarantine/marked-safe` | `~/.config/vt-quarantine/marked-safe` |
 | Log | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.log` | `~/Library/Application Support/vt-quarantine/vt-quarantine.log` | `journalctl --user -u vt-quarantine -f` |
@@ -372,7 +368,9 @@ folder.
 ## Uninstall
 
 - **Windows:** Settings → Apps → **VirusTotal Quarantine** → Uninstall. This
-  removes everything except Python, which is listed separately in Apps.
+  removes everything, its own Python too. If you installed version 2.1.2 or
+  older, the Python its setup installed stays (listed separately in Apps;
+  remove it there if nothing else uses it).
 - **macOS and Linux:** run `vt-quarantine --uninstall`. Then remove a Linux
   package with `sudo apt remove vt-quarantine`, `sudo dnf remove vt-quarantine`
   or `sudo pacman -R vt-quarantine`.

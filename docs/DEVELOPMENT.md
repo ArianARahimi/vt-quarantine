@@ -24,13 +24,17 @@ Settings are constants at the top of `vt-quarantine`: poll interval, rate
 limit, upload size limits, analysis timeout, and the list of file types that
 are uploaded without asking.
 
-## Building the Windows installers
+## Building the Windows installer
 
-`python3 windows/build.py` makes `vt-quarantine-<version>-setup.exe` and
-`vt-quarantine-<version>.msi` in `dist/`. It runs on Linux and needs `wixl`
-(from msitools) and `makensis` (NSIS) on the PATH; on Debian or Ubuntu:
-`apt install wixl nsis`. The pinned Python version and its hashes are at the
-top of [`windows/setup.nsi`](../windows/setup.nsi).
+`python3 windows/build.py` makes `vt-quarantine-<version>.msi` in `dist/`, with
+python.org's embeddable Python inside. It runs on Linux and needs `wixl` (from
+msitools) on the PATH; on Debian or Ubuntu: `apt install wixl`. The pinned
+Python version and its SHA-256 are at the top of
+[`windows/build.py`](../windows/build.py). When Python has a security fix,
+update the pin and release: installed copies get the new Python with the
+update. There's no setup.exe on purpose: an unsigned installer that downloads
+and runs Python is what antivirus heuristics call a downloader trojan, and
+2.1.2's was flagged.
 
 ## Building the Linux packages
 
@@ -75,6 +79,7 @@ refused by the pre-push hook, by the release job and by the signing script.
    passed, `git push origin master:stable`.
 3. `git tag vX.Y.Z stable && git push origin vX.Y.Z`. The tag must match
    `VERSION`.
-4. `tools/sign-release.sh vX.Y.Z` checks every file against `SHA256SUMS`,
-   signs it, confirms the release's own program accepts the signature, uploads
+4. `tools/sign-release.sh vX.Y.Z` checks every file against `SHA256SUMS` and
+   on VirusTotal (uploading the ones it hasn't seen; any engine flagging any
+   file stops the release), signs it, confirms the release's own program accepts the signature, uploads
    `SHA256SUMS.sig` and offers to publish.
