@@ -246,10 +246,11 @@ Windows on a real machine, is unverified:
 
 ## Known issues (Linux packages)
 
-- **The packages have only been installed in containers.** GitHub Actions
-  installs and removes each one on Debian 13, Ubuntu 24.04 and 22.04, Fedora 45
-  and Arch, and checks that the program finds the distribution's jeepney. None
-  has run on a real desktop with notifications yet.
+- **Only the Arch package has run on a real desktop** (KDE Plasma). GitHub
+  Actions installs and removes each package on Debian 13, Ubuntu 24.04 and
+  22.04, Fedora 45 and Arch, and checks that the program finds the
+  distribution's jeepney, but the .deb and .rpm haven't run on a desktop with
+  notifications yet.
 - **Other RPM-based distributions are untested.** On openSUSE the dependency names
   may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
 - **Updating through the notification is untested on real systems.** It installs
