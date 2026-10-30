@@ -1031,14 +1031,6 @@ class Quarantine:
         sig = signature(path)
         sha = sha256(path)
         log(f"checking {path.name} {sha}")
-        if marked_safe(sha):
-            if signature(path) != sig:
-                return False  # changed while being hashed: check again
-            log(f"{path.name} was marked safe before")
-            dest = release(path)
-            tell_moved("Marked safe before — moved to Downloads", html.escape(path.name), dest)
-            return False
-
         progress = None
         try:
             deadline = time.monotonic() + ANALYSIS_TIMEOUT
@@ -1067,11 +1059,11 @@ class Quarantine:
         name = html.escape(path.name)
         size = path.stat().st_size
         if size > UPLOAD_MAX:
-            return self.ask(path, sha, "Not on VirusTotal",
+            return self.no_verdict(path, sha, sig, "Not on VirusTotal",
                             f"{name} is unknown and too large to upload ({size // 1024**2} MB).",
                             "dialog-warning", report=False)
         if not should_auto_upload(path):
-            choice = self.ask(path, sha, "Not on VirusTotal",
+            choice = self.no_verdict(path, sha, sig, "Not on VirusTotal",
                               f"{name} is unknown to VirusTotal. Upload it for scanning? "
                               "(Uploaded files can be downloaded by VT subscribers.)",
                               "dialog-question", [("upload", "Upload")], report=False)
@@ -1118,13 +1110,13 @@ class Quarantine:
     def verdict(self, path, sha, sig, stats, results, tags=None):
         bad, sus, total, body = detection_summary(stats, results)
         if total == 0:
-            return self.ask(path, sha, "No engines could scan this file",
+            return self.no_verdict(path, sha, sig, "No engines could scan this file",
                             f"{html.escape(path.name)} got no verdict from any engine.",
                             "dialog-warning")
         if bad == 0 and sus == 0 and "encrypted" in (tags or ()):
             # Engines can't see inside a password-protected archive, so 0 detections
             # means nothing; this is a common way to slip malware past scanners.
-            return self.ask(path, sha, "Encrypted archive",
+            return self.no_verdict(path, sha, sig, "Encrypted archive",
                             f"{html.escape(path.name)} is password-protected, so VirusTotal "
                             f"could not scan its contents (0/{total} means nothing here).",
                             "dialog-warning")
@@ -1137,9 +1129,24 @@ class Quarantine:
             tell_moved("Clean — moved to Downloads", f"{html.escape(path.name)} (0/{total} detections)", dest)
             return False
         log(f"flagged {path.name}: {bad} malicious, {sus} suspicious")
-        return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low", detections=bad)
+        return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
+                        flagged=True, detections=bad)
 
-    def ask(self, path, sha, summary, body, icon, extra=(), report=True, detections=0):
+    def no_verdict(self, path, sha, sig, summary, body, icon, extra=(), report=True):
+        """Ask about a file VirusTotal has no verdict on (unknown, unscannable or
+        encrypted), unless it was marked safe before. Only these are remembered:
+        a flagged file always warns, so a mis-click can't wave it through for good."""
+        if not marked_safe(sha):
+            return self.ask(path, sha, summary, body, icon, extra, report)
+        if signature(path) != sig:
+            log(f"{path.name} changed while being checked, checking again")
+            return False
+        log(f"{path.name} was marked safe before")
+        dest = release(path)
+        tell_moved("Marked safe before — moved to Downloads", html.escape(path.name), dest)
+        return False
+
+    def ask(self, path, sha, summary, body, icon, extra=(), report=True, flagged=False, detections=0):
         """Prompt until the user picks an action. Returns True if the file stays held,
         or the chosen extra action key.
 
@@ -1170,6 +1177,10 @@ class Quarantine:
                     continue
             if choice == "release":
                 dest = release(path)
+                if flagged:
+                    tell_moved("Moved to Downloads", f"{html.escape(path.name)}\nIt's still flagged: "
+                               "if you download it again, you'll be warned again.", dest)
+                    return False
                 if sha:
                     remember_safe(sha, path.name)
                 tell_moved("Marked safe — moved to Downloads", html.escape(path.name), dest)

@@ -103,7 +103,7 @@ download folder back to Downloads.
 | Password-protected archive with 0 detections | Held, with a warning: engines can't see inside, so "clean" means nothing |
 | Unknown executable, script or installer | Uploaded to VirusTotal automatically, then handled as above |
 | Unknown other file (documents, media, archives, disk images, …) | Asks: **Upload**, **Delete** or **Mark as safe** (see [Privacy](#privacy)) |
-| Marked safe before (the exact same file) | Moved to Downloads straight away, without asking VirusTotal |
+| Marked safe before (the exact same file, and VirusTotal still has no verdict) | Moved to Downloads without asking again. If VirusTotal has flagged it since, you get the warning |
 | Known but still queued on VT | Waits for the analysis. VT returns all-zero stats for a queued file, and those are never treated as clean |
 | Changed after it was hashed | Checked again; a verdict only ever applies to the exact contents that were checked |
 
@@ -121,10 +121,19 @@ A flagged file can't leave quarantine until you've looked at its report:
 3. When 10 or more engines call the file malicious, **Mark as safe** asks once
    more: **Back**, **Delete** or **Move anyway**, in the same three places.
 
-A file you mark safe moves to Downloads, and the program remembers it by its
-SHA-256 hash. Downloading that exact file again (a tool you know is a false
-positive, say) sends it straight through. A changed file with the same name is
-checked as usual. `vt-quarantine --forget-safe` clears the list.
+A flagged file you move this way is **not** remembered: download it again and
+you get the warning again, so one mis-click can't let it through for good.
+
+### Files marked safe
+
+**Mark as safe** is remembered only for files VirusTotal has no verdict on:
+unknown documents, archives and disk images you chose not to upload, files no
+engine could scan, and password-protected archives. The program remembers the
+exact file by its SHA-256 hash, so when you download it again it skips the
+question. It's still looked up on VirusTotal first: if it has been flagged
+since, you get the warning, and if the check fails, you're asked as usual. A
+changed file with the same name is a different file and gets asked about.
+`vt-quarantine --forget-safe` clears the list.
 
 **Delete** shows a short "Deleted" note, so you know it worked.
 
