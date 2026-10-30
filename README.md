@@ -30,16 +30,25 @@ For deployment tools (Intune, Group Policy, `msiexec /i … /qn`) there's also
 `vt-quarantine-<version>.msi`. It installs the same thing but needs Python to be
 there already.
 
-**macOS and Linux:** download this repository (**Code → Download ZIP**) and
-extract it, then:
+**Linux:** download the package for your distribution from
+[Releases](https://github.com/ArianARahimi/vt-quarantine/releases) and install it:
 
 | | |
 |---|---|
-| **macOS** | Double-click **`install.command`** (the first time: right-click → Open). |
-| **Linux** | Run `sh install.sh` in a terminal. |
+| **Debian, Ubuntu** | `sudo apt install ./vt-quarantine_<version>-1_all.deb` |
+| **Fedora** | `sudo dnf install ./vt-quarantine-<version>-1.noarch.rpm` |
+| **Arch** | `sudo pacman -U vt-quarantine-<version>-1-any.pkg.tar.zst` |
 
-It asks for your API key, copies the program to its own folder, and sets it to
-start whenever you sign in.
+Then run `vt-quarantine --install` as yourself (not with `sudo`). It asks for
+your API key and turns it on for your account. The package brings its one
+dependency (jeepney) from your distribution, so nothing is downloaded at
+runtime. On any other distribution, download this repository
+(**Code → Download ZIP**), extract it, and run `sh install.sh`.
+
+**macOS:** download this repository (**Code → Download ZIP**), extract it, and
+double-click **`install.command`** (the first time: right-click → Open). It asks
+for your API key, copies the program to its own folder, and sets it to start
+whenever you sign in.
 
 Then, on every system, there's one manual step: point your browser's download
 folder at the quarantine folder (the Windows setup shows it with a **Copy**
@@ -72,7 +81,9 @@ separately in Apps if you want it gone too.
 
 **macOS and Linux:** run `vt-quarantine --uninstall`. It stops the program,
 removes the autostart entry, and offers to delete your API key and downloaded
-packages.
+packages. If you installed a Linux package, remove it after that with
+`sudo apt remove vt-quarantine`, `sudo dnf remove vt-quarantine` or
+`sudo pacman -R vt-quarantine`.
 
 Files still in quarantine are never deleted. Afterwards, set your browser's
 download folder back to Downloads.
@@ -87,8 +98,8 @@ download folder back to Downloads.
 
 | Result | What happens |
 |---|---|
-| 0 malicious, 0 suspicious | Moved to Downloads, with a short "Clean — released" notification |
-| Flagged by any engine | Notification listing the engines, with **Release** / **Delete** / **Open report** buttons |
+| 0 malicious, 0 suspicious | Moved to Downloads, with a short "Clean — moved to Downloads" notification |
+| Flagged by any engine | Notification listing the engines, with **Show report** / **Delete** / **Move to Downloads** buttons |
 | Password-protected archive with 0 detections | Held, with a warning: engines can't see inside, so "clean" means nothing |
 | Unknown executable, script or installer | Uploaded to VirusTotal automatically, then handled as above |
 | Unknown other file (documents, media, archives, disk images, …) | Asks before uploading (see [Privacy](#privacy)) |
@@ -96,7 +107,7 @@ download folder back to Downloads.
 | Changed after it was hashed | Checked again; a verdict only ever applies to the exact contents that were checked |
 
 While a scan is running, a "Scanning on VirusTotal" notification with an
-**Open report** button stays up. VirusTotal scans can take several minutes.
+**Show report** button stays up. VirusTotal scans can take several minutes.
 
 If you dismiss a notification, the file stays in quarantine until the program
 restarts (next sign-in).
@@ -148,7 +159,7 @@ responses.
   followed.
 - **One copy at a time.** A second instance exits instead of racing the first.
 - **Doesn't run as root.**
-- On Windows, released files keep their "downloaded from the internet" mark,
+- On Windows, files moved to Downloads keep their "downloaded from the internet" mark,
   so SmartScreen and Office still treat them with caution.
 
 ## Limitations
@@ -160,7 +171,7 @@ responses.
 - **Other programs running as you are out of scope.** Anything running under
   your account can write to the quarantine folder or edit the program itself.
 - **API quota.** If the quota runs out, files stay in quarantine and you're
-  asked what to do. A failed check never releases a file.
+  asked what to do. A failed check never moves a file to Downloads.
 - **macOS support is the newest** and has had the least real-world use.
 
 ## Known issues (Windows)
@@ -170,7 +181,7 @@ Windows 10 or 11 PC. Anything Wine can't do, or that only behaves like
 Windows on a real machine, is unverified:
 
 - **Notifications have never been shown on real Windows.** Wine can't display
-  toast notifications, so the buttons (Release / Delete / Open report, Enter
+  toast notifications, so the buttons (Show report / Delete / Move to Downloads, Enter
   key), notifications that stay on screen until answered, and what happens
   when one is dismissed or goes to the notification centre are all untested.
   This is the part most likely to need fixes.
@@ -206,6 +217,20 @@ Windows on a real machine, is unverified:
   location than on Windows, and the last setup page sometimes drew its bottom
   line late. Neither is expected on real Windows.
 
+## Known issues (Linux packages)
+
+- **The packages haven't been installed on a real system yet.** GitHub Actions
+  installs and removes each one on Debian 13, Ubuntu 24.04 and 22.04, Fedora 45
+  and Arch, but those tests haven't run yet either.
+- **Other RPM-based distributions are untested.** On openSUSE the dependency names
+  may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
+- **An update takes effect at your next sign-in.** The copy that's running keeps
+  going until then; `systemctl --user restart vt-quarantine` switches straight
+  away.
+- **Remove the package only after `vt-quarantine --uninstall`.** Otherwise the
+  program keeps running until you sign out, and systemd warns about a leftover
+  link to the removed service.
+
 ## Commands
 
 ```
@@ -233,7 +258,7 @@ shows which one it is.)
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `~/.local/share/vt-quarantine/` |
+| Program | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py` | `~/Library/Application Support/vt-quarantine/` | `/usr/bin/vt-quarantine` (package) or `~/.local/share/vt-quarantine/` |
 | API key | `%APPDATA%\vt-quarantine\api_key` | `~/Library/Application Support/vt-quarantine/api_key` | `~/.config/vt-quarantine/api_key` |
 | Log | `%LOCALAPPDATA%\vt-quarantine\vt-quarantine.log` | `~/Library/Application Support/vt-quarantine/vt-quarantine.log` | `journalctl --user -u vt-quarantine -f` |
 | Autostart | `HKCU\…\CurrentVersion\Run` | `~/Library/LaunchAgents/vt-quarantine.plist` | `~/.config/systemd/user/vt-quarantine.service` |
@@ -265,6 +290,13 @@ Pushing a version tag (`git tag v2.0.0 && git push origin v2.0.0`, matching
 `VERSION` in the program) makes GitHub Actions build both and attach them, with
 a `SHA256SUMS` file, to a draft release. Nothing is public until you publish
 that draft.
+
+## Building the Linux packages
+
+`linux/build.sh deb`, `linux/build.sh rpm` or `linux/build.sh arch` builds the
+package into `dist/`, with each distribution's own tools: `dpkg-deb` on Debian
+or Ubuntu, `rpmbuild` on Fedora, `makepkg` on Arch (not as root). The same version
+tag that builds the Windows installers builds and tests these too.
 
 ## Configuration
 

@@ -1,0 +1,15 @@
+# Installed by the Linux packages. Each user turns it on with
+# `vt-quarantine --install` (which also asks for the API key).
+[Unit]
+Description=VirusTotal check for browser downloads
+Documentation=https://github.com/ArianARahimi/vt-quarantine
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/vt-quarantine
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

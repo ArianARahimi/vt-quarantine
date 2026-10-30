@@ -8,7 +8,8 @@ notification asking what to do.
 Runs on Linux (freedesktop notifications over D-Bus), Windows 10/11 (toast
 notifications) and macOS (dialogs). Needs only Python: the few packages it uses
 are downloaded on first run, checked against pinned SHA-256 hashes and kept in
-its own folder.
+its own folder. Installed from a Linux package (.deb/.rpm/Arch), it uses the
+distribution's packages instead and downloads nothing.
 """
 import argparse
 import contextlib
@@ -416,6 +417,17 @@ def install_requirements():
     wheels = pinned_wheels()
     if not wheels:
         return True
+    if packaged():
+        # Package dependencies, kept up to date by the distribution.
+        import importlib
+        for module, name, _files in wheels:
+            try:
+                importlib.import_module(module)
+            except ImportError:
+                log(f"{name} is missing: reinstall the vt-quarantine package, "
+                    f"or install python3-{name} (python-{name} on Arch)")
+                return False
+        return True
     target = lib_dir()
     if str(target) not in sys.path:
         # Ahead of site-packages, so the pinned versions are the ones used.
@@ -796,11 +808,11 @@ def report_url(sha):
 
 class Progress:
     """Non-blocking notification that stays up while a scan runs, with an
-    "Open report" button; close() removes it once there is a verdict."""
+    "Show report" button; close() removes it once there is a verdict."""
 
     def __init__(self, summary, body, sha):
         url = report_url(sha)
-        self.handle = notifier.show(summary, body, "cloud-upload", [("report", "Open report")],
+        self.handle = notifier.show(summary, body, "cloud-upload", [("report", "Show report")],
                                     lambda key: key == "report" and open_url(url))
 
     def close(self):
@@ -868,7 +880,7 @@ def release(path):
         dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
         n += 1
     retry_locked(lambda: shutil.move(path, dest))
-    log(f"released {path.name} -> {dest}")
+    log(f"moved {path.name} to {dest}")
     return dest
 
 
@@ -1039,7 +1051,7 @@ class Quarantine:
                 log(f"{path.name} changed while being checked, checking again")
                 return False
             release(path)
-            notifier.notify("Clean — released", f"{html.escape(path.name)} (0/{total} detections)",
+            notifier.notify("Clean — moved to Downloads", f"{html.escape(path.name)} (0/{total} detections)",
                             "low", "security-high", expire=4000)
             return False
         log(f"flagged {path.name}: {bad} malicious, {sus} suspicious")
@@ -1048,16 +1060,16 @@ class Quarantine:
     def ask(self, path, sha, summary, body, icon, extra=(), report=True):
         """Prompt until the user picks an action. Returns True if the file stays held,
         or the chosen extra action key."""
-        actions = list(extra) + [("release", "Release"), ("delete", "Delete")]
-        if sha and report:
-            actions.append(("report", "Open report"))
+        # The riskiest choice last, where it takes the most deliberate reach.
+        actions = [("report", "Show report")] if sha and report else []
+        actions += list(extra) + [("delete", "Delete"), ("release", "Move to Downloads")]
         while True:
             choice = notifier.notify(summary, body, "critical", icon, actions)
             if choice == "report":
                 open_url(report_url(sha))
                 # Re-ask without the report button, after a pause so the new popup
                 # doesn't land under the cursor and catch a repeated click.
-                actions.remove(("report", "Open report"))
+                actions.remove(("report", "Show report"))
                 time.sleep(2)
                 continue
             if choice == "release":
@@ -1082,6 +1094,7 @@ SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.exe/
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
 UNIT_FILE = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "systemd" / "user" / "vt-quarantine.service"
 UNIT_MARKER = "# Written by vt-quarantine --install"
+PACKAGED_UNIT = Path("/usr/lib/systemd/user/vt-quarantine.service")
 LAUNCH_AGENT_LABEL = "vt-quarantine"
 LAUNCH_AGENT = HOME / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 
@@ -1156,6 +1169,13 @@ def copy_self():
     return INSTALLED_SCRIPT
 
 
+def packaged():
+    """Installed by a Linux package: the program is in /usr/bin and the package
+    provides the systemd user service."""
+    return (not WINDOWS and not MACOS and PACKAGED_UNIT.exists()
+            and Path(__file__).resolve().parent == Path("/usr/bin"))
+
+
 def systemd_quote(arg):
     return '"' + arg.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
 
@@ -1182,6 +1202,22 @@ RestartSec=10
 [Install]
 WantedBy=graphical-session.target
 """)
+    systemctl("daemon-reload")
+    systemctl("enable", "vt-quarantine.service")
+    systemctl("restart", "vt-quarantine.service")
+    return "journalctl --user -u vt-quarantine -f"
+
+
+def autostart_linux_packaged():
+    """Turn on the service the package installed, for this user only."""
+    if UNIT_FILE.exists():
+        if UNIT_MARKER not in UNIT_FILE.read_text():
+            sys.exit(f"{UNIT_FILE} would be used instead of the packaged service; "
+                     "remove it first (and the copy of vt-quarantine it starts).")
+        # Left by --install of a downloaded copy; the package replaces it.
+        systemctl("disable", "vt-quarantine.service", check=False)
+        UNIT_FILE.unlink()
+        INSTALLED_SCRIPT.unlink(missing_ok=True)
     systemctl("daemon-reload")
     systemctl("enable", "vt-quarantine.service")
     systemctl("restart", "vt-quarantine.service")
@@ -1273,22 +1309,29 @@ def install():
               "install Python from https://www.python.org/downloads/ and run this again.")
     print("Checking requirements...")
     if not install_requirements():
-        sys.exit("Could not download the required packages (see above). Check your connection and try again.")
+        sys.exit("The packages it needs are missing (see above)." if packaged() else
+                 "Could not download the required packages (see above). Check your connection and try again.")
     try:
         make_notifier()  # fails early if notifications can't work; on Windows registers the toast name
     except Exception as e:
         sys.exit(f"Notifications don't work here ({e}), and vt-quarantine needs them to ask you things.")
     if not read_key():
         set_key()
-    script = copy_self()
     QUARANTINE.mkdir(parents=True, exist_ok=True)
-    if WINDOWS:
-        logs = autostart_windows(script)
-    elif MACOS:
-        logs = autostart_macos(script)
+    if packaged():
+        logs = autostart_linux_packaged()
+        removal = ("To turn it off: vt-quarantine --uninstall\n"
+                   "(then remove the vt-quarantine package with your package manager)")
     else:
-        logs = autostart_linux(script)
-    remove_old_libs()
+        script = copy_self()
+        if WINDOWS:
+            logs = autostart_windows(script)
+        elif MACOS:
+            logs = autostart_macos(script)
+        else:
+            logs = autostart_linux(script)
+        remove_old_libs()
+        removal = "To remove it later: run this script with --uninstall"
     print(f"""
 vt-quarantine is running and starts automatically when you sign in.
 
@@ -1296,7 +1339,7 @@ Last step: set your browser's download folder to
     {QUARANTINE}
 
 Log: {logs}
-To remove it later: run this script with --uninstall""")
+{removal}""")
 
 
 def confirm(prompt):
@@ -1330,8 +1373,12 @@ def uninstall(purge=False):
         systemctl("disable", "--now", "vt-quarantine.service", check=False)
         UNIT_FILE.unlink()
         systemctl("daemon-reload", check=False)
+    elif packaged():
+        systemctl("disable", "--now", "vt-quarantine.service", check=False)
     INSTALLED_SCRIPT.unlink(missing_ok=True)
     print("vt-quarantine is stopped and no longer starts at sign-in.")
+    if packaged():
+        print("The program itself stays installed; remove the vt-quarantine package to remove it.")
     if purge or confirm("Also delete your API key, log and downloaded packages? [y/N] "):
         KEY_FILE.unlink(missing_ok=True)
         for d in (CONFIG_DIR, DATA_DIR):
@@ -1348,7 +1395,7 @@ def uninstall(purge=False):
 def check():
     """Fetch what's missing and make sure notifications work, without running."""
     print(f"vt-quarantine {VERSION}, Python {platform.python_version()} on {sys.platform}\n"
-          f"quarantine folder: {QUARANTINE}\nreleased to:       {RELEASE_DIR}\n"
+          f"quarantine folder: {QUARANTINE}\nmoved to:         {RELEASE_DIR}\n"
           f"API key file:      {KEY_FILE} ({'present' if read_key() else 'MISSING'})\n"
           f"packages folder:   {lib_dir() if pinned_wheels() else '(none needed)'}")
     if not install_requirements():
