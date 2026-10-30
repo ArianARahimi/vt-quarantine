@@ -1098,7 +1098,9 @@ UPDATE_MAX_BYTES = 64 * 1024**2
 # private key stays on the maintainer's computer, so whoever controls the GitHub
 # repository still can't push code to anyone. A new key is added by a release
 # signed with an old one.
-RELEASE_KEYS = ()
+RELEASE_KEYS = (
+    "703f6d9f2f1df368340fe0ef973a427cf938c16c65187f66b5409b3c713f57d5",  # 2026-10-29
+)
 NO_AUTO_UPDATE = CONFIG_DIR / "no-auto-update"
 UPDATED_MARKER = DATA_DIR / "updated"
 

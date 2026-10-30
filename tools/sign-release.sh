@@ -27,7 +27,7 @@ if [ "$listed" != "$present" ]; then
     exit 1
 fi
 
-echo "Signing (asks for the key's passphrase):"
+echo "Signing (asks for the key's passphrase, if it has one):"
 openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
 
 # The program in this release must accept the signature, or it couldn't update
