@@ -125,6 +125,29 @@ responses.
 - **macOS:** a dialog when a decision is needed, a Notification Center banner
   otherwise. A dialog that gets no answer within a day counts as dismissed.
 
+## Updates
+
+Once a day the program asks GitHub for the newest stable release. A newer one
+is only installed if two checks pass:
+
+- its list of files and their SHA-256 hashes (`SHA256SUMS`) carries a valid
+  Ed25519 signature from the release key;
+- the file it downloads matches that list.
+
+The release key never leaves the maintainer's computer, so even someone who took
+over the GitHub account couldn't get code onto yours.
+
+| Installed with | How it updates |
+|---|---|
+| `install.sh`, `install.command` or `--install` | Replaces its own copy and restarts, never in the middle of checking a download |
+| Windows setup or `.msi` | Downloads the new setup and runs it silently |
+| Linux package | Asks first, because installing needs your password (through `pkexec`) |
+| A git checkout | Doesn't update itself |
+
+After an update, a short notification says so. `vt-quarantine --auto-update off`
+turns this off, and then the program never contacts GitHub; `--auto-update on`
+turns it back on.
+
 ## Privacy
 
 - **Known files are never uploaded.** Only the SHA-256 hash is sent.
@@ -137,8 +160,10 @@ responses.
 - **Uploads go out as `sample.<ext>`**, not under the original filename.
 - **Uploads are tied to your API key's account.** VirusTotal attributes each
   submission to the key that sent it.
-- **No telemetry.** The program talks to `www.virustotal.com` and, once on
-  first run, to PyPI (see below). Nothing else.
+- **No telemetry.** The program talks to `www.virustotal.com`, once on first
+  run to PyPI (see below), and once a day to GitHub to look for updates (only
+  your IP address and the program's version reach GitHub; turn it off with
+  `--auto-update off`). Nothing else.
 
 ## Security
 
@@ -180,6 +205,8 @@ Windows support has only been tested under Wine on Linux, not on a real
 Windows 10 or 11 PC. Anything Wine can't do, or that only behaves like
 Windows on a real machine, is unverified:
 
+- **Automatic updates haven't run on Windows yet.** Downloading the new setup
+  and running it silently is covered by unit tests only.
 - **Notifications have never been shown on real Windows.** Wine can't display
   toast notifications, so the buttons (Show report / Delete / Move to Downloads, Enter
   key), notifications that stay on screen until answered, and what happens
@@ -224,9 +251,13 @@ Windows on a real machine, is unverified:
   and Arch, but those tests haven't run yet either.
 - **Other RPM-based distributions are untested.** On openSUSE the dependency names
   may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
-- **An update takes effect at your next sign-in.** The copy that's running keeps
-  going until then; `systemctl --user restart vt-quarantine` switches straight
-  away.
+- **Updating through the notification is untested on real systems.** It installs
+  the package through `pkexec`, which needs the password prompt that desktop
+  environments provide.
+- **An update from your package manager takes effect at your next sign-in.** The
+  copy that's running keeps going until then; `systemctl --user restart
+  vt-quarantine` switches straight away. (Updates through the notification restart
+  it themselves.)
 - **Remove the package only after `vt-quarantine --uninstall`.** Otherwise the
   program keeps running until you sign out, and systemd warns about a leftover
   link to the removed service.
@@ -240,6 +271,7 @@ vt-quarantine --uninstall         stop and remove autostart
 vt-quarantine --set-key           save or replace the API key
 vt-quarantine --check             fetch missing packages and check notifications
 vt-quarantine --test-notification show a test notification with buttons
+vt-quarantine --auto-update off   stop checking for updates (on: start again)
 vt-quarantine --version
 ```
 
@@ -297,6 +329,19 @@ that draft.
 package into `dist/`, with each distribution's own tools: `dpkg-deb` on Debian
 or Ubuntu, `rpmbuild` on Fedora, `makepkg` on Arch (not as root). The same version
 tag that builds the Windows installers builds and tests these too.
+
+## Releasing
+
+1. Once: `tools/make-release-key.sh` makes the release key (it asks for a
+   passphrase) and prints its public half, which goes into `RELEASE_KEYS` in
+   `vt-quarantine`. Back up the key and passphrase: without them no update can
+   reach installed copies.
+2. Set `VERSION` in `vt-quarantine`, commit, then `git tag vX.Y.Z && git push
+   origin vX.Y.Z`. GitHub Actions builds and tests everything and makes a draft
+   release.
+3. `tools/sign-release.sh vX.Y.Z` checks every file against `SHA256SUMS`, signs
+   it, confirms the release's own program accepts the signature, uploads
+   `SHA256SUMS.sig` and offers to publish.
 
 ## Configuration
 
