@@ -1276,6 +1276,9 @@ class Quarantine:
         while time.monotonic() < deadline:
             time.sleep(ANALYSIS_POLL_SECONDS)
             r = vt("GET", f"/analyses/{analysis}")
+            if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
+                log(f"analysis of {path.name}: not listed yet")
+                continue
             r.raise_for_status()
             attrs = r.json()["data"]["attributes"]
             if attrs["status"] != status:
