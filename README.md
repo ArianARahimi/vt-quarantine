@@ -169,7 +169,7 @@ over the GitHub account couldn't get code onto yours.
 |---|---|
 | `install.sh`, `install.command` or `--install` | Replaces its own copy and restarts, never in the middle of checking a download |
 | Windows setup or `.msi` | Downloads the new setup and runs it silently |
-| Linux package | Asks first, because installing needs your password (through `pkexec`) |
+| Linux package | Asks first, because installing needs your password (through `pkexec`). The question stays on screen until you answer; **What's new** opens the release notes and asks again, and if you close it, it asks again the next day |
 | A git checkout | Doesn't update itself |
 
 After an update, a short notification says so. `vt-quarantine --auto-update off`

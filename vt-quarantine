@@ -505,7 +505,7 @@ class Notifier:
 
     def notify(self, summary, body, urgency="normal", icon="security-medium", actions=(), expire=None):
         """Show a notification; with actions, block until one is chosen and return its key
-        ("" if the notification was dismissed or could not be shown)."""
+        ("" if the notification was dismissed, None if it could not be shown)."""
         done = threading.Event()
         choice = []
 
@@ -518,7 +518,7 @@ class Notifier:
             handle = self._show(summary, body, urgency, icon, actions, expire, on_event if actions else None)
         except Exception as e:
             log(f"could not show notification {summary!r}: {e}")
-            return ""
+            return None
         if not actions:
             return ""
         done.wait()
@@ -1213,6 +1213,7 @@ RELEASE_KEYS = (
 )
 NO_AUTO_UPDATE = CONFIG_DIR / "no-auto-update"
 UPDATED_MARKER = DATA_DIR / "updated"
+DECLINED_UPDATE = CONFIG_DIR / "declined-update"  # a version the user said no to
 
 
 def ed25519_verify(public, message, signature):
@@ -1337,12 +1338,21 @@ def update_asset(kind, version):
             "arch": f"vt-quarantine-{v}-1-any.pkg.tar.zst"}.get(package_format())
 
 
-def find_update(kind):
-    """The newest stable release if it's newer than this one: (version, asset name,
-    verified asset bytes, release page). None if there's nothing to install."""
+def declined_version():
+    try:
+        return parse_version(DECLINED_UPDATE.read_text().strip())
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def find_update(kind, skip=None):
+    """The newest stable release if it's newer than this one and than `skip`: (version,
+    asset name, verified asset bytes, release page). None if there's nothing to install."""
     release = json.loads(github_get(f"https://api.github.com/repos/{REPO}/releases/latest", 1024**2))
     version = parse_version(release.get("tag_name"))
     if release.get("draft") or release.get("prerelease") or not version or version <= parse_version(VERSION):
+        return None
+    if skip and version <= skip:
         return None
     urls = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
     name = update_asset(kind, version)
@@ -1382,7 +1392,8 @@ class Updater:
         if not kind or NO_AUTO_UPDATE.exists() or not RELEASE_KEYS:
             return
         try:
-            found = find_update(kind)
+            # Someone who said no to a version isn't asked again until the next one.
+            found = find_update(kind, declined_version() if kind == "package" else None)
         except (OSError, RuntimeError, ValueError, KeyError) as e:
             log(f"update check failed: {e}")
             return
@@ -1406,21 +1417,37 @@ class Updater:
             log(f"installing version {v}")
             return
         else:
-            choice = notifier.notify(f"vt-quarantine {v} is available",
-                                     "Installing it asks for your administrator password.",
-                                     "normal", "system-software-update",
-                                     [("notes", "What's new"), ("update", "Update")])
-            if choice == "notes":
+            # Stays up until answered (a passing popup is easy to miss), and reading
+            # the release notes doesn't use up the offer.
+            while True:
+                choice = notifier.notify(f"vt-quarantine {v} is available",
+                                         "Installing it asks for your administrator password.",
+                                         "critical", "system-software-update",
+                                         [("update", "Update"), ("notes", "What's new")])
+                if choice != "notes":
+                    break
                 open_url(page)
+                time.sleep(2)  # so a repeated click doesn't land on the next popup
+            if choice == "":
+                self.decline(v)
             if choice != "update":
-                return
-            if not self.install_package(name, data):
+                return  # None (couldn't be shown): offered again at the next check
+            if not self.install_package(v, name, data):
                 return
             UPDATED_MARKER.write_text(v)
         log(f"updated to version {v}")
         self.restart.set()
 
-    def install_package(self, name, data):
+    def decline(self, v):
+        """Closing the offer (or the password prompt) means no to this version."""
+        log(f"version {v} declined; the next release will be offered")
+        try:
+            DECLINED_UPDATE.parent.mkdir(parents=True, exist_ok=True)
+            DECLINED_UPDATE.write_text(v)
+        except OSError as e:
+            log(f"could not save that: {e}")
+
+    def install_package(self, v, name, data):
         folder = Path(tempfile.mkdtemp(prefix="vt-quarantine-update-"))
         try:
             package = folder / name
@@ -1432,10 +1459,13 @@ class Updater:
             cmd = {"deb": ["apt-get", "install", "-y"], "rpm": ["dnf", "install", "-y"],
                    "arch": ["pacman", "-U", "--noconfirm"]}[package_format()]
             r = subprocess.run(["pkexec", *cmd, str(package)], capture_output=True, text=True)
+            if r.returncode == 126:  # the password prompt was closed
+                self.decline(v)
+                return False
             if r.returncode:
                 log(f"package update failed: {r.stderr.strip()[-500:]}")
-                notifier.notify("Update not installed", "It was cancelled or failed; "
-                                "vt-quarantine will offer it again tomorrow.", "normal", "dialog-error")
+                notifier.notify("Update not installed", "It failed; vt-quarantine will try "
+                                "again tomorrow.", "normal", "dialog-error")
                 return False
             return True
         except (OSError, KeyError) as e:
