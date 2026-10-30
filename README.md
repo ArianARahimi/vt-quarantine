@@ -21,8 +21,8 @@
 - **Free and open source** (MIT), for **Windows 10/11, Linux and macOS**
 - **Lightweight:** one small background program, no window, no tray icon.
   Everything happens in notifications.
-- **Easy to set up:** an installer that brings what it needs, and Firefox-based
-  browsers are set up for you
+- **Easy to set up:** an installer that brings what it needs, and your default
+  browser is set up for you if it's Firefox-based
 - **Careful by default:** files are locked until they're checked, private files
   are never uploaded without asking, and a flagged file can't leave quarantine
   until you've seen its report
@@ -82,16 +82,17 @@ double-click **`install.command`**. The first time, right-click it and choose
 
 ### Browser setup
 
-Your browsers need to save downloads into the quarantine folder. The first time
-vt-quarantine runs:
+Your browser needs to save downloads into the quarantine folder. The first time
+vt-quarantine runs, it takes care of your **default browser**:
 
-- **Firefox, Waterfox, LibreWolf and Floorp** are set up for you, in every
-  profile. Restart them for it to take effect.
-- **Other browsers** can't be changed safely from outside, so a notification
-  names the ones it found and has a **Copy folder** button. Paste the folder
-  into the browser's download setting (see below).
+- **Firefox, Waterfox, LibreWolf or Floorp** is set up for you, in every
+  profile. Restart it for this to take effect.
+- **Any other browser** can't be changed safely from outside, so one
+  notification shows the folder with a **Copy folder** button. Paste it into the
+  browser's download setting (see below).
 
-Uninstalling puts the Firefox settings back as they were.
+Other browsers you use need the same setting by hand. Uninstalling puts the
+Firefox settings back as they were.
 
 <details>
 <summary>Setting the folder by hand</summary>
@@ -301,8 +302,8 @@ unverified:
 - **An update from your package manager takes effect at your next sign-in.**
   `systemctl --user restart vt-quarantine` switches straight away. Updates
   through the notification restart it themselves.
-- **The Chrome-family notification has only been tested in unit tests.**
-  Finding those browsers depends on their usual settings folders.
+- **Setup for a Chrome-family default browser has only been tested in unit
+  tests.** The default browser is found through `xdg-settings`.
 - **Remove the package only after `vt-quarantine --uninstall`.** Otherwise it
   keeps running until you sign out, and systemd warns about a leftover link.
 </details>

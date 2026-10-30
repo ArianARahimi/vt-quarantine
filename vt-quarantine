@@ -1667,9 +1667,9 @@ def set_auto_update(state):
 
 
 # --- Browser setup -----------------------------------------------------------------
-# On the first run, Firefox-based browsers are pointed at the quarantine folder through
-# each profile's user.js. Others can't be set up safely from outside, so a notification
-# tells how. --uninstall puts the profiles back as they were.
+# On the first run, the default browser is pointed at the quarantine folder: through
+# each profile's user.js if it's Firefox-based. Others can't be set up safely from
+# outside, so a notification tells how. --uninstall puts the profiles back as they were.
 
 BROWSER_SETUP = CONFIG_DIR / "browser-setup.json"  # what the first run changed
 USER_JS_BEGIN = "// vt-quarantine: begin (vt-quarantine --uninstall removes this)"
@@ -1705,10 +1705,13 @@ def firefox_profile_roots():
             ("Floorp", flatpak / "one.ablaze.floorp" / ".floorp")]
 
 
-def firefox_profiles():
-    """(browser, profile folder) for every profile listed in a profiles.ini."""
+def firefox_profiles(only=None):
+    """(browser, profile folder) for every profile listed in a profiles.ini (of the
+    browser named `only`, if given)."""
     found = []
     for browser, root in firefox_profile_roots():
+        if only and browser != only:
+            continue
         ini = configparser.ConfigParser(interpolation=None)
         try:
             ini.read(root / "profiles.ini", encoding="utf-8")
@@ -1837,34 +1840,48 @@ def undo_firefox_profile(folder, before):
     user_js.write_text(text + "\n".join([USER_JS_RESTORE, *restore]) + "\n", encoding="utf-8")
 
 
-def other_browsers():
-    """Installed browsers that have to be set up by hand."""
+# Keywords in what the system names its default browser (a .desktop file on Linux, a
+# ProgId on Windows, a bundle id on macOS), most specific first.
+BROWSER_NAMES = (("waterfox", "Waterfox"), ("librewolf", "LibreWolf"), ("floorp", "Floorp"),
+                 ("firefox", "Firefox"), ("chromium", "Chromium"), ("chrome", "Chrome"),
+                 ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("opera", "Opera"),
+                 ("safari", "Safari"))
+FIREFOX_BASED = ("Firefox", "Waterfox", "LibreWolf", "Floorp")
+
+
+def default_browser_id():
+    """What the system opens web links with."""
     if WINDOWS:
-        local = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
-        roaming = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
-        places = {"Chrome": [local / "Google" / "Chrome" / "User Data"],
-                  "Edge": [local / "Microsoft" / "Edge" / "User Data"],
-                  "Brave": [local / "BraveSoftware" / "Brave-Browser" / "User Data"],
-                  "Vivaldi": [local / "Vivaldi" / "User Data"],
-                  "Chromium": [local / "Chromium" / "User Data"],
-                  "Opera": [roaming / "Opera Software" / "Opera Stable"]}
-    elif MACOS:
-        base = HOME / "Library" / "Application Support"
-        places = {"Safari": [HOME / "Library" / "Safari"],
-                  "Chrome": [base / "Google" / "Chrome"], "Edge": [base / "Microsoft Edge"],
-                  "Brave": [base / "BraveSoftware" / "Brave-Browser"], "Vivaldi": [base / "Vivaldi"],
-                  "Chromium": [base / "Chromium"], "Opera": [base / "com.operasoftware.Opera"]}
-    else:
-        config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
-        flatpak = HOME / ".var" / "app"
-        places = {"Chrome": [config / "google-chrome", flatpak / "com.google.Chrome"],
-                  "Edge": [config / "microsoft-edge", flatpak / "com.microsoft.Edge"],
-                  "Brave": [config / "BraveSoftware" / "Brave-Browser", flatpak / "com.brave.Browser"],
-                  "Vivaldi": [config / "vivaldi", flatpak / "com.vivaldi.Vivaldi"],
-                  "Chromium": [config / "chromium", flatpak / "org.chromium.Chromium",
-                               HOME / "snap" / "chromium"],
-                  "Opera": [config / "opera", flatpak / "com.opera.Opera"]}
-    return [name for name, dirs in places.items() if any(d.is_dir() for d in dirs)]
+        import winreg
+        key = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            return winreg.QueryValueEx(k, "ProgId")[0]
+    if MACOS:
+        import plistlib
+        plist = HOME / "Library" / "Preferences" / "com.apple.LaunchServices" / \
+            "com.apple.launchservices.secure.plist"
+        with contextlib.suppress(FileNotFoundError), open(plist, "rb") as f:
+            for handler in plistlib.load(f).get("LSHandlers", []):
+                if handler.get("LSHandlerURLScheme") == "https":
+                    return handler.get("LSHandlerRoleAll", "")
+        return "com.apple.safari"  # nothing chosen
+    for cmd in (["xdg-settings", "get", "default-web-browser"],
+                ["xdg-mime", "query", "default", "x-scheme-handler/https"]):
+        if shutil.which(cmd[0]):
+            found = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
+            if found:
+                return found
+    return ""
+
+
+def default_browser():
+    """The default browser's name, or None if it isn't one this knows."""
+    try:
+        ident = default_browser_id().lower()
+    except Exception as e:
+        log(f"could not find the default browser: {e}")
+        return None
+    return next((name for key, name in BROWSER_NAMES if key in ident), None)
 
 
 def copy_to_clipboard(text):
@@ -1895,15 +1912,13 @@ def copy_to_clipboard(text):
         return False
 
 
-def names(items):
-    """"A", "A and B", "A, B and C"."""
-    return " and ".join([", ".join(items[:-1]), items[-1]] if len(items) > 1 else items)
-
-
 def setup_browsers():
-    """Once, on the first run: send downloads to the quarantine folder."""
-    changed, record = [], {"firefox": []}
-    for browser, folder in firefox_profiles():
+    """Once, on the first run: send the default browser's downloads to quarantine.
+    One notification at most, about that browser only."""
+    browser = default_browser()
+    record = {"browser": browser, "firefox": []}
+    profiles = firefox_profiles(browser) if browser in FIREFOX_BASED else []
+    for _, folder in profiles:
         try:
             before = setup_firefox_profile(folder)
         except (OSError, ValueError) as e:
@@ -1912,27 +1927,33 @@ def setup_browsers():
         if before is not None:
             record["firefox"].append({"profile": str(folder), "before": before})
             log(f"set up {browser} profile {folder}")
-            if browser not in changed:
-                changed.append(browser)
     BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
     BROWSER_SETUP.write_text(json.dumps(record, indent=1))
-    others = other_browsers()
-    if changed or others:
-        wait_for_free_screen("browser setup")
-    if changed:
-        notifier.notify(f"Downloads from {names(changed)} now go to quarantine",
-                        "Restart the browser for this to take effect.", "normal", "security-high")
-    if not others:
+    if profiles:
+        if record["firefox"]:  # nothing to say if it was set up already
+            wait_for_free_screen("browser setup")
+            notifier.notify(f"Downloads from {browser} now go to quarantine",
+                            f"Restart {browser} for this to take effect.", "normal", "security-high")
         return
+    wait_for_free_screen("browser setup")
+    ask_to_set_folder(browser)
+
+
+def ask_to_set_folder(browser):
+    """For a browser that can't be set up from outside (or isn't known)."""
     folder = html.escape(str(QUARANTINE))
-    steps = ("Safari: Settings → General → File download location → Other.\n" if "Safari" in others else "")
-    chromium = [b for b in others if b != "Safari"]
-    if chromium:
-        steps += f"{', '.join(chromium)}: Settings → Downloads → Location → Change.\n"
+    if browser == "Safari":
+        steps = "In Safari: Settings → General → File download location → Other."
+    elif browser in FIREFOX_BASED:
+        steps = f"In {browser}: Settings → General → Downloads → Save files to → Browse."
+    elif browser:
+        steps = f"In {browser}: Settings → Downloads → Location → Change."
+    else:
+        steps = "In your browser's settings, change where downloads are saved."
     while True:
-        choice = notifier.notify(f"Set {names(others)} to download into quarantine",
-                                 f"{steps}Choose this folder:\n<b>{folder}</b>", "critical", "folder-download",
-                                 [("copy", "Copy folder"), ("help", "Help")])
+        choice = notifier.notify(f"Set {browser or 'your browser'} to download into quarantine",
+                                 f"{steps}\nChoose this folder:\n<b>{folder}</b>", "critical",
+                                 "folder-download", [("copy", "Copy folder"), ("help", "Help")])
         if choice == "help":
             open_url(BROWSER_HELP)
             time.sleep(2)  # so a repeated click doesn't land on the next popup
