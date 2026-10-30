@@ -163,6 +163,49 @@ responses.
   asked what to do. A failed check never releases a file.
 - **macOS support is the newest** and has had the least real-world use.
 
+## Known issues (Windows)
+
+Windows support has only been tested under Wine on Linux, not on a real
+Windows 10 or 11 PC. Anything Wine can't do, or that only behaves like
+Windows on a real machine, is unverified:
+
+- **Notifications have never been shown on real Windows.** Wine can't display
+  toast notifications, so the buttons (Release / Delete / Open report, Enter
+  key), notifications that stay on screen until answered, and what happens
+  when one is dismissed or goes to the notification centre are all untested.
+  This is the part most likely to need fixes.
+- **The installers are unsigned.** Windows SmartScreen shows "Windows protected
+  your PC" (More info → Run anyway) until they're code-signed.
+- **Only 64-bit Intel/AMD Windows was tested.** On ARM64 and 32-bit Windows,
+  setup downloads a different Python installer, and that path has never run.
+- **Starting right after an `.msi` install is untested.** The `.msi` starts the
+  program itself once installed. On real Windows that runs inside the Windows
+  Installer service, which Wine doesn't reproduce. If it doesn't start, it will
+  at the next sign-in. `setup.exe` starts it a second way, so it's unaffected.
+- **Upgrading with the `.msi` alone lost the API key under Wine.** Wine doesn't
+  tell the old version it's being upgraded, so the old version's uninstall step
+  deletes the key and downloaded packages. Real Windows passes this on, so it
+  shouldn't happen there, but that's untested. `setup.exe` puts the key back
+  either way.
+- **The "Enter key" console window is untested.** If no API key is set, a
+  notification button opens a window to type it in, which depends on
+  notifications working (see above).
+- **Untested wizard controls:** the **Copy** button on the last page of setup,
+  and the "Get a free API key" and "Help for other browsers" links.
+- **Reinstalling the same version from a different build is untested**
+  (Windows Installer error 1638, which setup.exe tries to handle).
+- **The `.msi` may miss a Python installed "for all users".** It searches the
+  64-bit registry from a 32-bit package, and whether Windows allows that is
+  untested. `setup.exe` finds that Python itself and passes it along, so it's
+  unaffected.
+- **Uninstalling after Python has been removed leaves files behind.** The
+  cleanup step needs Python. Without it, the API key, log and downloaded
+  packages stay in `%APPDATA%\vt-quarantine` and `%LOCALAPPDATA%\vt-quarantine`;
+  delete those folders by hand.
+- **Under Wine only:** Apps-list entries are stored in a different registry
+  location than on Windows, and the last setup page sometimes drew its bottom
+  line late. Neither is expected on real Windows.
+
 ## Commands
 
 ```
