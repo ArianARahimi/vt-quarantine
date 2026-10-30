@@ -21,10 +21,11 @@
 - **Free and open source** (MIT), for **Windows 10/11, Linux and macOS**
 - **Lightweight:** one small background program, no window, no tray icon.
   Everything happens in notifications.
-- **Easy to set up:** an installer that brings what it needs, plus one setting
-  in your browser
-- **Careful by default:** private files are never uploaded without asking, and
-  a flagged file can't leave quarantine until you've seen its report
+- **Easy to set up:** an installer that brings what it needs, and Firefox-based
+  browsers are set up for you
+- **Careful by default:** files are locked until they're checked, private files
+  are never uploaded without asking, and a flagged file can't leave quarantine
+  until you've seen its report
 
 ## Install
 
@@ -81,8 +82,20 @@ double-click **`install.command`**. The first time, right-click it and choose
 
 ### Browser setup
 
-Last step, on every system: point your browser's download folder at the
-quarantine folder. The Windows setup shows it with a **Copy** button.
+Your browsers need to save downloads into the quarantine folder. The first time
+vt-quarantine runs:
+
+- **Firefox, Waterfox, LibreWolf and Floorp** are set up for you, in every
+  profile. Restart them for it to take effect.
+- **Other browsers** can't be changed safely from outside, so a notification
+  names the ones it found and has a **Copy folder** button. Paste the folder
+  into the browser's download setting (see below).
+
+Uninstalling puts the Firefox settings back as they were.
+
+<details>
+<summary>Setting the folder by hand</summary>
+
 
 | System | Quarantine folder |
 |---|---|
@@ -97,18 +110,19 @@ quarantine folder. The Windows setup shows it with a **Copy** button.
   `user.js`, which also makes Save As dialogs start in the quarantine folder.
 - **Safari:** Settings → General → File download location → Other.
 
-> [!TIP]
-> Folders starting with a dot are hidden in the folder picker. Press
-> <kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd> on macOS or <kbd>Ctrl</kbd><kbd>H</kbd>
-> on Linux to show them.
+Folders starting with a dot are hidden in the folder picker. Press
+<kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd> on macOS or <kbd>Ctrl</kbd><kbd>H</kbd>
+on Linux to show them.
+</details>
 
 To check that notifications work, run `vt-quarantine --test-notification`.
 
 ## How it works
 
 Your browser saves each download into the quarantine folder. Once the download
-has finished, vt-quarantine looks up its SHA-256 hash on VirusTotal and acts on
-the result:
+has finished, vt-quarantine **locks** it, so nothing can open it by accident (a
+click in the browser's download list, a double-click, a thumbnail), and looks
+up its SHA-256 hash on VirusTotal:
 
 | Result | What happens |
 |---|---|
@@ -145,8 +159,9 @@ next time. It's still looked up on VirusTotal each time, and if it has been
 flagged since, you get the warning. `vt-quarantine --forget-safe` clears the
 list.
 
-If you close a notification without choosing, the file stays in quarantine
-until the program restarts (at your next sign-in).
+If you close a notification without choosing, the file stays locked in
+quarantine until the program restarts (at your next sign-in) and asks again. To
+take a file out, use the notification: one moved out by hand stays locked.
 
 ## Updates
 
@@ -185,6 +200,9 @@ this version": you're asked again only when the next one comes out.
   come from your Linux distribution's package, or are downloaded from PyPI and
   checked against SHA-256 hashes built into the program. No pip, nothing
   installed system-wide.
+- **Quarantine is private.** On Linux and macOS only you can open the folder
+  (on Windows your Downloads folder already is), and each file in it is locked
+  until it's cleared.
 - **Hardened against tricks:** filenames are treated as plain text everywhere,
   links planted in the quarantine folder are ignored, only one copy runs at a
   time, and it refuses to run as root. On Windows, moved files keep their
@@ -196,11 +214,16 @@ this version": you're asked again only when the next one comes out.
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Only the quarantine folder is covered.** Other browsers, profiles and tools,
   and Save As dialogs pointed at another folder, skip it.
+- **"Always open similar files" opens a download before it's checked.** A
+  browser that opens files of a type automatically does so the moment the
+  download finishes, before vt-quarantine can lock it. Turn that off in the
+  browser's download settings.
 - **Programs already running as you are out of scope.** They can write to the
   quarantine folder or change vt-quarantine itself.
 - **The free API allows 4 lookups a minute and 500 a day.** vt-quarantine paces
   itself; if the quota runs out, files wait in quarantine.
-- **macOS support is the newest** and has had the least real-world use.
+- **macOS support is the newest** and has had the least real-world use. Its
+  browser setup and file locking haven't run on a Mac yet.
 
 ## Known issues
 
@@ -217,6 +240,9 @@ unverified:
   untested. This is the part most likely to need fixes.
 - **Automatic updates haven't run on Windows yet.** Downloading the new setup
   and running it silently is covered by unit tests only.
+- **Locking files and the browser setup haven't run on real Windows.** Locking
+  uses `icacls` to deny reading, and Copy folder uses PowerShell; under Wine
+  both are only partly there. Both are covered by unit tests only.
 - **The installers are unsigned.** SmartScreen shows "Windows protected your
   PC" (More info → Run anyway) until they're code-signed.
 - **Only 64-bit Intel/AMD Windows was tested.** On ARM64 and 32-bit Windows,
@@ -258,6 +284,8 @@ unverified:
 - **An update from your package manager takes effect at your next sign-in.**
   `systemctl --user restart vt-quarantine` switches straight away. Updates
   through the notification restart it themselves.
+- **The Chrome-family notification has only been tested in unit tests.**
+  Finding those browsers depends on their usual settings folders.
 - **Remove the package only after `vt-quarantine --uninstall`.** Otherwise it
   keeps running until you sign out, and systemd warns about a leftover link.
 </details>
@@ -270,7 +298,7 @@ unverified:
 ```
 vt-quarantine                     run (what autostart does)
 vt-quarantine --install           set up, ask for the API key, start at sign-in
-vt-quarantine --uninstall         stop and remove autostart
+vt-quarantine --uninstall         stop, undo the browser setup, forget everything
 vt-quarantine --set-key           save or replace the API key
 vt-quarantine --check             fetch missing packages and check notifications
 vt-quarantine --test-notification show a test notification with buttons
@@ -321,13 +349,16 @@ folder.
 
 - **Windows:** Settings → Apps → **VirusTotal Quarantine** → Uninstall. This
   removes everything except Python, which is listed separately in Apps.
-- **macOS and Linux:** run `vt-quarantine --uninstall`. It offers to delete
-  your API key too. Then remove a Linux package with
-  `sudo apt remove vt-quarantine`, `sudo dnf remove vt-quarantine` or
-  `sudo pacman -R vt-quarantine`.
+- **macOS and Linux:** run `vt-quarantine --uninstall`. Then remove a Linux
+  package with `sudo apt remove vt-quarantine`, `sudo dnf remove vt-quarantine`
+  or `sudo pacman -R vt-quarantine`.
 
-Files still in quarantine are never deleted. Afterwards, set your browser's
-download folder back to Downloads.
+Uninstalling forgets everything: your API key, files marked safe, settings and
+log are deleted, and the Firefox setup is undone. If a Firefox-based browser is
+open at the time, a few lines in its `user.js` put the settings back once it
+restarts; they say they're safe to delete afterwards. Files still in quarantine
+are unlocked and left in place, never deleted. Browsers you set up by hand need
+their download folder set back by hand.
 
 ## Contributing
 

@@ -12,6 +12,7 @@ its own folder. Installed from a Linux package (.deb/.rpm/Arch), it uses the
 distribution's packages instead and downloads nothing.
 """
 import argparse
+import configparser
 import contextlib
 import hashlib
 import html
@@ -22,6 +23,7 @@ import platform
 import re
 import shutil
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -875,13 +877,72 @@ class Progress:
 
 # --- Files ---------------------------------------------------------------------
 
-def open_nofollow(path):
-    """Open for reading, refusing a symlink swapped in after the directory scan."""
+def _open_nofollow(path):
     if not hasattr(os, "O_NOFOLLOW"):  # Windows
         if os.path.islink(path):
             raise OSError(f"refusing to follow symbolic link {path}")
         return open(path, "rb")
     return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb")
+
+
+def open_nofollow(path):
+    """Open a quarantined file for reading, refusing a symlink swapped in after the
+    directory scan. A locked file is unlocked just long enough to open it; what's
+    already open stays readable."""
+    try:
+        return _open_nofollow(path)
+    except PermissionError:
+        unlock_file(path)
+        try:
+            return _open_nofollow(path)
+        finally:
+            lock_file(path)
+
+
+# Files waiting in quarantine are locked, so nothing opens them by accident (the
+# browser's list of downloads, a double-click, a thumbnail) until they're cleared.
+UMASK = os.umask(0o022)
+os.umask(UMASK)
+EVERYONE = "*S-1-1-0"  # Windows: deny reading to everyone, this user included
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def lock_file(path):
+    try:
+        if WINDOWS:
+            subprocess.run(["icacls", str(path), "/deny", f"{EVERYONE}:(RD)"], capture_output=True,
+                           check=True, creationflags=NO_WINDOW)
+        elif stat.S_ISREG(os.lstat(path).st_mode):
+            os.chmod(path, 0)
+    except (OSError, subprocess.CalledProcessError) as e:
+        log(f"could not lock {path.name}: {e}")
+
+
+def unlock_file(path):
+    try:
+        if WINDOWS:
+            subprocess.run(["icacls", str(path), "/remove:d", EVERYONE], capture_output=True,
+                           check=True, creationflags=NO_WINDOW)
+        elif stat.S_ISREG(os.lstat(path).st_mode):
+            os.chmod(path, 0o666 & ~UMASK)
+    except (OSError, subprocess.CalledProcessError) as e:
+        log(f"could not unlock {path.name}: {e}")
+
+
+def unlock_quarantine():
+    """Unlock everything still in quarantine (when uninstalling)."""
+    with contextlib.suppress(OSError), os.scandir(QUARANTINE) as entries:
+        for entry in entries:
+            if entry.is_file(follow_symlinks=False):
+                unlock_file(Path(entry.path))
+
+
+def make_quarantine():
+    """The quarantine folder, readable only by this user. (On Windows the Downloads
+    folder it lives in already is.)"""
+    QUARANTINE.mkdir(parents=True, exist_ok=True)
+    if not WINDOWS:
+        os.chmod(QUARANTINE, 0o700)
 
 
 def signature(path):
@@ -927,6 +988,7 @@ def wait_complete(path):
 
 
 def release(path):
+    unlock_file(path)
     dest = RELEASE_DIR / path.name
     n = 1
     while dest.exists():
@@ -1014,6 +1076,7 @@ class Quarantine:
         hold = False
         try:
             if wait_complete(path):
+                lock_file(path)
                 hold = self.check(path)
         except Exception as e:
             log(f"error on {path.name}: {e}")
@@ -1501,6 +1564,300 @@ def set_auto_update(state):
               "with --install or an installer.)")
 
 
+# --- Browser setup -----------------------------------------------------------------
+# On the first run, Firefox-based browsers are pointed at the quarantine folder through
+# each profile's user.js. Others can't be set up safely from outside, so a notification
+# tells how. --uninstall puts the profiles back as they were.
+
+BROWSER_SETUP = CONFIG_DIR / "browser-setup.json"  # what the first run changed
+USER_JS_BEGIN = "// vt-quarantine: begin (vt-quarantine --uninstall removes this)"
+USER_JS_END = "// vt-quarantine: end"
+USER_JS_RESTORE = ("// vt-quarantine was uninstalled while this browser was open: these lines put the\n"
+                   "// download settings back as they were. Delete them once it has restarted.")
+DOWNLOAD_PREFS = ("browser.download.folderList", "browser.download.dir", "browser.download.useDownloadDir",
+                  "browser.download.lastDir", "browser.download.lastDir.savePerSite")
+PREF_LINE = re.compile(r'^\s*user_pref\("([^"\\]+)",\s*(.*?)\);[ \t]*$', re.M)
+BROWSER_HELP = f"https://github.com/{REPO}#browser-setup"
+
+
+def firefox_profile_roots():
+    """(browser, folder that may hold a profiles.ini) for Firefox and browsers built on it."""
+    if WINDOWS:
+        base = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
+        return [("Firefox", base / "Mozilla" / "Firefox"), ("Waterfox", base / "Waterfox"),
+                ("LibreWolf", base / "librewolf"), ("Floorp", base / "Floorp")]
+    if MACOS:
+        base = HOME / "Library" / "Application Support"
+        return [("Firefox", base / "Firefox"), ("Waterfox", base / "Waterfox"),
+                ("LibreWolf", base / "librewolf"), ("Floorp", base / "Floorp")]
+    flatpak = HOME / ".var" / "app"
+    return [("Firefox", HOME / ".mozilla" / "firefox"),
+            ("Firefox", env_dir("XDG_CONFIG_HOME", HOME / ".config") / "mozilla" / "firefox"),
+            ("Firefox", HOME / "snap" / "firefox" / "common" / ".mozilla" / "firefox"),
+            ("Firefox", flatpak / "org.mozilla.firefox" / ".mozilla" / "firefox"),
+            ("Waterfox", HOME / ".waterfox"),
+            ("Waterfox", flatpak / "net.waterfox.waterfox" / ".waterfox"),
+            ("LibreWolf", HOME / ".librewolf"),
+            ("LibreWolf", flatpak / "io.gitlab.librewolf-community" / ".librewolf"),
+            ("Floorp", HOME / ".floorp"),
+            ("Floorp", flatpak / "one.ablaze.floorp" / ".floorp")]
+
+
+def firefox_profiles():
+    """(browser, profile folder) for every profile listed in a profiles.ini."""
+    found = []
+    for browser, root in firefox_profile_roots():
+        ini = configparser.ConfigParser(interpolation=None)
+        try:
+            ini.read(root / "profiles.ini", encoding="utf-8")
+        except (configparser.Error, UnicodeDecodeError) as e:
+            log(f"could not read {root / 'profiles.ini'}: {e}")
+            continue
+        for section in ini.sections():
+            if not section.startswith("Profile") or not ini.get(section, "Path", fallback=""):
+                continue
+            path = ini.get(section, "Path")
+            folder = root / path if ini.get(section, "IsRelative", fallback="1") == "1" else Path(path)
+            if folder.is_dir() and all(folder != f for _, f in found):
+                found.append((browser, folder))
+    return found
+
+
+def read_prefs(file):
+    """{pref: value as written} from a prefs.js or user.js (later lines win)."""
+    try:
+        return dict(PREF_LINE.findall(file.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+
+def js_string(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def is_quarantine(value):
+    try:
+        path = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(path, str) and os.path.normcase(os.path.normpath(path)) == \
+        os.path.normcase(os.path.normpath(str(QUARANTINE)))
+
+
+def setup_firefox_profile(folder):
+    """Point one profile's downloads at the quarantine folder. Returns its earlier
+    values of those settings, or None if it was pointed there already."""
+    user_js = folder / "user.js"
+    current = {**read_prefs(folder / "prefs.js"), **read_prefs(user_js)}
+    if current.get("browser.download.folderList") == "2" and is_quarantine(current.get("browser.download.dir")):
+        return None
+    before = {k: v for k, v in read_prefs(folder / "prefs.js").items() if k in DOWNLOAD_PREFS}
+    q = js_string(QUARANTINE)
+    block = [USER_JS_BEGIN,
+             'user_pref("browser.download.folderList", 2);',
+             f'user_pref("browser.download.dir", {q});',
+             'user_pref("browser.download.useDownloadDir", true);',
+             # Save As dialogs start there too, not in the last folder used on a site.
+             f'user_pref("browser.download.lastDir", {q});',
+             'user_pref("browser.download.lastDir.savePerSite", false);',
+             USER_JS_END]
+    try:
+        text = user_js.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    user_js.write_text(text + "\n".join(block) + "\n", encoding="utf-8")
+    return before
+
+
+def profile_in_use(folder):
+    """Is a browser running with this profile? (It rewrites prefs.js when it quits.)"""
+    lock = folder / ("parent.lock" if WINDOWS else ".parentlock")
+    try:
+        if WINDOWS:
+            # The browser holds it open without sharing.
+            with open(lock, "r+"):
+                return False
+        import fcntl
+        with open(lock, "r+") as f:
+            try:
+                fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.lockf(f, fcntl.LOCK_UN)
+            return False
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return True
+
+
+def undo_firefox_profile(folder, before):
+    """Take the setup out of user.js and put the earlier download settings back."""
+    user_js = folder / "user.js"
+    try:
+        text = user_js.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    text = re.sub(rf"^{re.escape(USER_JS_BEGIN)}\n.*?^{re.escape(USER_JS_END)}\n?", "", text, flags=re.M | re.S)
+    # The browser copied the settings into prefs.js, so taking them out of user.js
+    # isn't enough. While it's closed, prefs.js can be put back as it was.
+    prefs = folder / "prefs.js"
+    if not profile_in_use(folder):
+        try:
+            lines = prefs.read_text(encoding="utf-8").splitlines(keepends=True)
+        except FileNotFoundError:
+            lines = []
+        except (OSError, UnicodeDecodeError):
+            lines = None
+        if lines is not None:
+            kept = [line for line in lines
+                    if not (m := PREF_LINE.match(line)) or m.group(1) not in DOWNLOAD_PREFS]
+            kept += [f'user_pref("{k}", {v});\n' for k, v in before.items()]
+            if lines:
+                prefs.write_text("".join(kept), encoding="utf-8")
+            if text.strip():
+                user_js.write_text(text, encoding="utf-8")
+            else:
+                user_js.unlink()  # it only ever held the setup
+            return
+    # Open: it would write its current settings back over prefs.js when it quits, so
+    # set the earlier ones (or the defaults) through user.js once more.
+    defaults = {"browser.download.folderList": "1", "browser.download.useDownloadDir": "true",
+                "browser.download.lastDir": js_string(RELEASE_DIR),
+                "browser.download.lastDir.savePerSite": "true"}
+    own = dict(PREF_LINE.findall(text))  # the user's own settings, left in charge
+    restore = [f'user_pref("{k}", {before.get(k, defaults.get(k))});' for k in DOWNLOAD_PREFS
+               if k not in own and (k in before or k in defaults)]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    user_js.write_text(text + "\n".join([USER_JS_RESTORE, *restore]) + "\n", encoding="utf-8")
+
+
+def other_browsers():
+    """Installed browsers that have to be set up by hand."""
+    if WINDOWS:
+        local = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
+        roaming = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
+        places = {"Chrome": [local / "Google" / "Chrome" / "User Data"],
+                  "Edge": [local / "Microsoft" / "Edge" / "User Data"],
+                  "Brave": [local / "BraveSoftware" / "Brave-Browser" / "User Data"],
+                  "Vivaldi": [local / "Vivaldi" / "User Data"],
+                  "Chromium": [local / "Chromium" / "User Data"],
+                  "Opera": [roaming / "Opera Software" / "Opera Stable"]}
+    elif MACOS:
+        base = HOME / "Library" / "Application Support"
+        places = {"Safari": [HOME / "Library" / "Safari"],
+                  "Chrome": [base / "Google" / "Chrome"], "Edge": [base / "Microsoft Edge"],
+                  "Brave": [base / "BraveSoftware" / "Brave-Browser"], "Vivaldi": [base / "Vivaldi"],
+                  "Chromium": [base / "Chromium"], "Opera": [base / "com.operasoftware.Opera"]}
+    else:
+        config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
+        flatpak = HOME / ".var" / "app"
+        places = {"Chrome": [config / "google-chrome", flatpak / "com.google.Chrome"],
+                  "Edge": [config / "microsoft-edge", flatpak / "com.microsoft.Edge"],
+                  "Brave": [config / "BraveSoftware" / "Brave-Browser", flatpak / "com.brave.Browser"],
+                  "Vivaldi": [config / "vivaldi", flatpak / "com.vivaldi.Vivaldi"],
+                  "Chromium": [config / "chromium", flatpak / "org.chromium.Chromium",
+                               HOME / "snap" / "chromium"],
+                  "Opera": [config / "opera", flatpak / "com.opera.Opera"]}
+    return [name for name, dirs in places.items() if any(d.is_dir() for d in dirs)]
+
+
+def copy_to_clipboard(text):
+    """True if the text is now on the clipboard."""
+    try:
+        if WINDOWS:
+            return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                   "Set-Clipboard -Value $env:VTQ_CLIPBOARD"],
+                                  env={**os.environ, "VTQ_CLIPBOARD": text}, capture_output=True,
+                                  creationflags=NO_WINDOW, timeout=30).returncode == 0
+        if MACOS:
+            return subprocess.run(["pbcopy"], input=text.encode(), capture_output=True,
+                                  timeout=10).returncode == 0
+        # These keep running to hold the text, so don't wait on their output.
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            if shutil.which(cmd[0]):
+                return subprocess.run(cmd, input=text.encode(), stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+        from jeepney import DBusAddress, MessageType, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+        klipper = DBusAddress("/klipper", bus_name="org.kde.klipper", interface="org.kde.klipper.klipper")
+        with open_dbus_connection("SESSION") as conn:
+            reply = conn.send_and_get_reply(new_method_call(klipper, "setClipboardContents", "s", (text,)),
+                                            timeout=10)
+        return reply.header.message_type == MessageType.method_return
+    except Exception as e:
+        log(f"could not copy to the clipboard: {e}")
+        return False
+
+
+def names(items):
+    """"A", "A and B", "A, B and C"."""
+    return " and ".join([", ".join(items[:-1]), items[-1]] if len(items) > 1 else items)
+
+
+def setup_browsers():
+    """Once, on the first run: send downloads to the quarantine folder."""
+    changed, record = [], {"firefox": []}
+    for browser, folder in firefox_profiles():
+        try:
+            before = setup_firefox_profile(folder)
+        except (OSError, ValueError) as e:
+            log(f"could not set up {browser} profile {folder}: {e}")
+            continue
+        if before is not None:
+            record["firefox"].append({"profile": str(folder), "before": before})
+            log(f"set up {browser} profile {folder}")
+            if browser not in changed:
+                changed.append(browser)
+    BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
+    BROWSER_SETUP.write_text(json.dumps(record, indent=1))
+    if changed:
+        notifier.notify(f"Downloads from {names(changed)} now go to quarantine",
+                        "Restart the browser for this to take effect.", "normal", "security-high")
+    others = other_browsers()
+    if not others:
+        return
+    folder = html.escape(str(QUARANTINE))
+    steps = ("Safari: Settings → General → File download location → Other.\n" if "Safari" in others else "")
+    chromium = [b for b in others if b != "Safari"]
+    if chromium:
+        steps += f"{', '.join(chromium)}: Settings → Downloads → Location → Change.\n"
+    while True:
+        choice = notifier.notify(f"Set {names(others)} to download into quarantine",
+                                 f"{steps}Choose this folder:\n<b>{folder}</b>", "critical", "folder-download",
+                                 [("copy", "Copy folder"), ("help", "Help")])
+        if choice == "help":
+            open_url(BROWSER_HELP)
+            time.sleep(2)  # so a repeated click doesn't land on the next popup
+            continue
+        if choice == "copy" and not copy_to_clipboard(str(QUARANTINE)):
+            notifier.notify("Couldn't copy the folder", f"Type it in instead:\n<b>{folder}</b>",
+                            "normal", "dialog-warning")
+        return
+
+
+def first_run_browser_setup():
+    try:
+        setup_browsers()
+    except Exception as e:
+        log(f"browser setup failed: {e}")
+
+
+def undo_browser_setup():
+    try:
+        record = json.loads(BROWSER_SETUP.read_text())
+    except (OSError, ValueError):
+        return
+    for entry in record.get("firefox", []):
+        folder = Path(entry["profile"])
+        if folder.is_dir():
+            undo_firefox_profile(folder, entry.get("before", {}))
+            print(f"Put back the download settings of {folder}")
+
+
 # --- Setup commands --------------------------------------------------------------
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1732,7 +2089,7 @@ def install():
         sys.exit(f"Notifications don't work here ({e}), and vt-quarantine needs them to ask you things.")
     if not read_key():
         set_key()
-    QUARANTINE.mkdir(parents=True, exist_ok=True)
+    make_quarantine()
     if packaged():
         logs = autostart_linux_packaged()
         removal = ("To turn it off: vt-quarantine --uninstall\n"
@@ -1750,22 +2107,15 @@ def install():
     print(f"""
 vt-quarantine is running and starts automatically when you sign in.
 
-Last step: set your browser's download folder to
+It sets up Firefox, Waterfox, LibreWolf and Floorp by itself (restart them).
+Any other browser: set its download folder to
     {QUARANTINE}
 
 Log: {logs}
 {removal}""")
 
 
-def confirm(prompt):
-    """Yes/no question; no when nobody can answer (on Windows even NUL claims to be a tty)."""
-    try:
-        return bool(sys.stdin and sys.stdin.isatty()) and input(prompt).strip().lower() in ("y", "yes")
-    except EOFError:
-        return False
-
-
-def uninstall(purge=False):
+def uninstall(keep_data=False):
     if WINDOWS:
         import winreg
         try:
@@ -1794,17 +2144,20 @@ def uninstall(purge=False):
     print("vt-quarantine is stopped and no longer starts at sign-in.")
     if packaged():
         print("The program itself stays installed; remove the vt-quarantine package to remove it.")
-    if purge or confirm("Also delete your API key, log and downloaded packages? [y/N] "):
-        KEY_FILE.unlink(missing_ok=True)
-        for d in (CONFIG_DIR, DATA_DIR):
-            shutil.rmtree(d, ignore_errors=True)
-        with contextlib.suppress(OSError):
-            QUARANTINE.rmdir()  # only if empty: never delete downloads
-        print("Deleted.")
-    else:
-        print(f"Your API key ({KEY_FILE}) and downloaded packages ({DATA_DIR}) are left in place.")
+    if keep_data:  # stopped for an upgrade, which keeps everything
+        return
+    # Forget everything: browser settings put back, files in quarantine unlocked, and
+    # the API key, settings, log and downloaded packages deleted. Never the downloads.
+    undo_browser_setup()
+    unlock_quarantine()
+    KEY_FILE.unlink(missing_ok=True)
+    for d in (CONFIG_DIR, DATA_DIR):
+        shutil.rmtree(d, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        QUARANTINE.rmdir()  # only if empty
+    print("Deleted your API key, settings and log.")
     if QUARANTINE.is_dir() and any(QUARANTINE.iterdir()):
-        print(f"Files still in quarantine (not deleted): {QUARANTINE}")
+        print(f"Files still in quarantine are unlocked and left in place: {QUARANTINE}")
 
 
 def check():
@@ -1846,7 +2199,7 @@ def run():
         log("already running")
         return 0
     (DATA_DIR / "pid").write_text(str(os.getpid()))
-    QUARANTINE.mkdir(parents=True, exist_ok=True)
+    make_quarantine()
 
     while not install_requirements():
         log("retrying in a minute")
@@ -1897,6 +2250,8 @@ def run():
     for old in DATA_DIR.glob("vt-quarantine-*-setup.exe"):  # left by Windows updates
         with contextlib.suppress(OSError):
             old.unlink()
+    if not BROWSER_SETUP.exists():  # the first run
+        threading.Thread(target=first_run_browser_setup, daemon=True).start()
     updater = Updater()
     while True:
         try:
@@ -1920,9 +2275,11 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--install", action="store_true",
                        help="set everything up and start at sign-in (asks for the API key if needed)")
-    group.add_argument("--uninstall", action="store_true", help="stop, and stop starting at sign-in")
-    parser.add_argument("--purge", action="store_true",
-                        help="with --uninstall: also delete the API key, log and packages without asking")
+    group.add_argument("--uninstall", action="store_true",
+                       help="stop, undo the browser setup and delete the API key and all settings")
+    parser.add_argument("--purge", action="store_true", help=argparse.SUPPRESS)  # what --uninstall does now
+    parser.add_argument("--keep-data", action="store_true",
+                        help=argparse.SUPPRESS)  # installers stopping the old copy for an upgrade
     group.add_argument("--set-key", action="store_true", help="save your VirusTotal API key")
     group.add_argument("--check", action="store_true",
                        help="download missing packages and check that notifications work")
@@ -1935,10 +2292,10 @@ def main():
     args = parser.parse_args()
     if args.install:
         return install()
-    if args.purge and not args.uninstall:
-        parser.error("--purge only goes with --uninstall")
+    if (args.purge or args.keep_data) and not args.uninstall:
+        parser.error("--purge and --keep-data only go with --uninstall")
     if args.uninstall:
-        return uninstall(args.purge)
+        return uninstall(keep_data=args.keep_data)
     if args.set_key:
         return set_key()
     if args.check:

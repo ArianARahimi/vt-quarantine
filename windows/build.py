@@ -180,11 +180,12 @@ def wxs(ver, icon, script):
         </Directory>
       </Directory>
     </Directory>
-    <!-- Stop the running copy; on a real uninstall also delete the API key, log and
-         downloaded packages. Never fails the uninstall (Python may be gone already). -->
+    <!-- Stop the running copy; on a real uninstall also undo the browser setup and delete
+         the API key, settings, log and downloaded packages (an upgrade keeps them).
+         Never fails the uninstall (Python may be gone already). -->
     <CustomAction Id="Purge" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot; --uninstall --purge"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
-    <CustomAction Id="StopForUpgrade" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot; --uninstall"
+    <CustomAction Id="StopForUpgrade" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot; --uninstall --keep-data"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
     <CustomAction Id="Start" Property="PYTHONW" ExeCommand="&quot;[#Script]&quot;" Return="asyncNoWait"/>
     <InstallUISequence>

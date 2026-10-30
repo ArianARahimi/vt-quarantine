@@ -305,7 +305,7 @@ Function DonePage
   !insertmacro MUI_HEADER_TEXT "VirusTotal Quarantine is running" "It starts by itself whenever you sign in."
   nsDialogs::Create 1018
   Pop $0
-  ${NSD_CreateLabel} 0 0 100% 10u "Last step: make your browser save downloads to this folder."
+  ${NSD_CreateLabel} 0 0 100% 10u "Last step: make your browsers save downloads to this folder."
   Pop $0
   ${NSD_CreateText} 0 13u 78% 13u "$Quarantine"
   Pop $0
@@ -313,7 +313,7 @@ Function DonePage
   ${NSD_CreateButton} 80% 12u 20% 15u "&Copy"
   Pop $0
   ${NSD_OnClick} $0 CopyPath
-  ${NSD_CreateLabel} 0 32u 100% 40u "Firefox: Settings > General > Downloads > Save files to > Browse.$\r$\nChrome or Edge: Settings > Downloads > Location > Change.$\r$\nChecked files then move on to your normal Downloads folder by themselves."
+  ${NSD_CreateLabel} 0 32u 100% 40u "Firefox, Waterfox and LibreWolf are set up for you: just restart them.$\r$\nChrome or Edge: Settings > Downloads > Location > Change, and choose this folder.$\r$\nChecked files then move on to your normal Downloads folder by themselves."
   Pop $0
   ${NSD_CreateLink} 0 74u 100% 10u "Help for other browsers"
   Pop $0
