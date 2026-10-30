@@ -6,7 +6,12 @@
                                             asks for the API key, then runs the .msi
 
 Needs wixl (from msitools) and makensis (NSIS) on PATH, or set WIXL / MAKENSIS.
-Arch: pacman -S msitools, nsis from the AUR. Debian/Ubuntu: apt install msitools nsis.
+Arch: pacman -S msitools, nsis from the AUR. Debian/Ubuntu: apt install wixl nsis.
+
+    build.py          both
+    build.py msi      just the .msi
+    build.py setup    just setup.exe, around the .msi already in dist/ (so the
+                      .msi can be signed first: setup.exe carries it inside)
 """
 import html
 import os
@@ -207,19 +212,27 @@ def run(cmd):
 
 
 def main():
+    what = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if len(sys.argv) > 2 or what not in ("all", "msi", "setup"):
+        sys.exit(__doc__)
     ver = version()
     BUILD.mkdir(parents=True, exist_ok=True)
     icon = BUILD / "vt-quarantine.ico"
     make_icon(icon)
-    source = BUILD / "wxs"
-    source.write_text(wxs(ver, icon, ROOT / "vt-quarantine"))
     msi = DIST / f"vt-quarantine-{ver}.msi"
     exe = DIST / f"vt-quarantine-{ver}-setup.exe"
-    run([os.environ.get("WIXL", "wixl"), "-o", msi, source])
-    run([os.environ.get("MAKENSIS", "makensis"), "-V2", "-INPUTCHARSET", "UTF8",
-         f"-DVERSION={ver}", f"-DMSI={msi}", f"-DICON={icon}", f"-DOUTFILE={exe}",
-         f"-DOLDEST={OLDEST}", f"-DNEWEST={NEWEST}", HERE / "setup.nsi"])
-    print(f"\nBuilt:\n  {msi}\n  {exe}")
+    if what in ("all", "msi"):
+        source = BUILD / "wxs"
+        source.write_text(wxs(ver, icon, ROOT / "vt-quarantine"))
+        run([os.environ.get("WIXL", "wixl"), "-o", msi, source])
+        print(f"Built {msi}")
+    if what in ("all", "setup"):
+        if not msi.exists():
+            sys.exit(f"{msi} is missing: build it first (build.py msi)")
+        run([os.environ.get("MAKENSIS", "makensis"), "-V2", "-INPUTCHARSET", "UTF8",
+             f"-DVERSION={ver}", f"-DMSI={msi}", f"-DICON={icon}", f"-DOUTFILE={exe}",
+             f"-DOLDEST={OLDEST}", f"-DNEWEST={NEWEST}", HERE / "setup.nsi"])
+        print(f"Built {exe}")
 
 
 if __name__ == "__main__":

@@ -258,8 +258,13 @@ systemctl --user enable --now vt-quarantine.service
 
 `python3 windows/build.py` makes both installers in `dist/`. It runs on Linux
 and needs `wixl` (from msitools) and `makensis` (NSIS) on the PATH; on
-Debian/Ubuntu: `apt install msitools nsis`. The pinned Python version and its
+Debian/Ubuntu: `apt install wixl nsis`. The pinned Python version and its
 hashes are at the top of [`windows/setup.nsi`](windows/setup.nsi).
+
+Pushing a version tag (`git tag v2.0.0 && git push origin v2.0.0`, matching
+`VERSION` in the program) makes GitHub Actions build both and attach them, with
+a `SHA256SUMS` file, to a draft release. Nothing is public until you publish
+that draft.
 
 ## Configuration
 
