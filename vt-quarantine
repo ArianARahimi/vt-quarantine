@@ -12,6 +12,7 @@ its own folder. Installed from a Linux package (.deb/.rpm/Arch), it uses the
 distribution's packages instead and downloads nothing.
 """
 import argparse
+import collections
 import configparser
 import contextlib
 import hashlib
@@ -48,7 +49,8 @@ VT_HOST = "www.virustotal.com"
 API = f"https://{VT_HOST}/api/v3"
 USER_AGENT = f"vt-quarantine/{VERSION}"
 
-POLL_SECONDS = 2
+POLL_SECONDS = 0.5  # looking at the quarantine folder costs next to nothing
+STABLE_SECONDS = 1  # a download that hasn't changed for this long is finished
 UPDATE_CHECK_SECONDS = 24 * 3600
 CONFIRM_DETECTIONS = 10  # "Mark as safe" asks twice from this many malicious verdicts
 QUEUED_RECHECK_SECONDS = 60      # file known to VT but its analysis is still queued
@@ -816,19 +818,26 @@ notifier = None  # set in run()
 # --- VirusTotal ------------------------------------------------------------------
 
 class RateLimiter:
-    def __init__(self, per_minute):
-        self.interval = 60 / per_minute
+    """At most `per_minute` requests in any minute (with a second to spare): a few
+    downloads at once are all checked straight away, only a longer run waits."""
+
+    def __init__(self, per_minute, window=61):
+        self.per_minute = per_minute
+        self.window = window
         self.lock = threading.Lock()
-        self.next = 0.0
+        self.sent = collections.deque()
 
     def wait(self):
         # Holding the lock while sleeping is deliberate: it serialises callers.
         with self.lock:
-            now = time.monotonic()
-            if self.next > now:
-                time.sleep(self.next - now)
-                now = self.next
-            self.next = now + self.interval
+            while True:
+                now = time.monotonic()
+                while self.sent and self.sent[0] <= now - self.window:
+                    self.sent.popleft()
+                if len(self.sent) < self.per_minute:
+                    break
+                time.sleep(self.sent[0] + self.window - now)
+            self.sent.append(now)
 
 
 limiter = RateLimiter(REQUESTS_PER_MINUTE)
@@ -1083,7 +1092,9 @@ def wait_complete(path):
         if not part.exists() and sig == last:
             return True
         last = None if part.exists() else sig
-        time.sleep(POLL_SECONDS)
+        # Browsers only give a download its own name once it's finished; waiting for
+        # it to stop changing is for anything else that saves there.
+        time.sleep(STABLE_SECONDS)
 
 
 def release(path):
@@ -1157,6 +1168,7 @@ class Quarantine:
         self.lock = threading.Lock()
         self.active = set()  # being processed
         self.held = set()    # waiting on the user, notification dismissed
+        self.asking = threading.Lock()  # one question on screen at a time
 
     def scan(self):
         for entry in os.scandir(QUARANTINE):
@@ -1308,7 +1320,14 @@ class Quarantine:
         tell_moved("Marked safe before — moved to Downloads", html.escape(path.name), dest)
         return False
 
-    def ask(self, path, sha, summary, body, icon, extra=(), report=True, flagged=False, detections=0):
+    def ask(self, *args, **kwargs):
+        """Questions come one after another, not all at once: the next is shown as soon
+        as the one before is answered (or closed). Files waiting their turn stay
+        locked in quarantine."""
+        with self.asking:
+            return self._ask(*args, **kwargs)
+
+    def _ask(self, path, sha, summary, body, icon, extra=(), report=True, flagged=False, detections=0):
         """Prompt until the user picks an action. Returns True if the file stays held,
         or the chosen extra action key.
 
