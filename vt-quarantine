@@ -2373,30 +2373,191 @@ LAUNCH_AGENT_LABEL = "vt-quarantine"
 LAUNCH_AGENT = HOME / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 
 
-def own_console():
-    """True when this process has a console window to itself (opened from the
-    "Enter key" notification), which closes as soon as it exits."""
-    if not WINDOWS:
-        return False
-    import ctypes
-    return ctypes.windll.kernel32.GetConsoleProcessList((ctypes.c_uint32 * 2)(), 2) == 1
+SIGNUP_URL = "https://www.virustotal.com/gui/join-us"
+KEY_PAGE_URL = "https://www.virustotal.com/gui/my-apikey"
+GUIDE_URL = "https://github.com/ArianARahimi/vt-quarantine#install"
+
+
+def parse_key(text):
+    """The API key in pasted text (spaces and line breaks dropped), or None."""
+    key = re.sub(r"\s", "", text or "")
+    return key if re.fullmatch(r"[0-9a-fA-F]{64}", key) else None
 
 
 def set_key():
     import getpass
-    while True:
-        key = getpass.getpass("VirusTotal API key (from https://www.virustotal.com/gui/my-apikey, "
-                              "input hidden): ").strip()
-        if re.fullmatch(r"[0-9a-fA-F]{64}", key):
-            break
-        if not own_console():
-            sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
-        print("That doesn't look like a VirusTotal API key (64 hex characters). "
-              "Try again, or close this window.")
+    key = parse_key(getpass.getpass(f"VirusTotal API key (from {KEY_PAGE_URL}, input hidden): "))
+    if not key:
+        sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
     print(f"Saved in {save_key(key)}.")
-    if own_console():
-        print("vt-quarantine starts checking downloads within a minute.")
-        time.sleep(3)
+
+
+def key_dialog():
+    """Windows: a small window to paste the API key into (hidden like a password),
+    with the steps to get one. Plain Win32 through ctypes. True if a key was saved."""
+    import ctypes
+    from ctypes import wintypes as w
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    LRESULT = ctypes.c_ssize_t
+    DLGPROC = ctypes.WINFUNCTYPE(LRESULT, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+    for name, res, args in (
+            ("DialogBoxIndirectParamW", LRESULT, (w.HINSTANCE, ctypes.c_void_p, w.HWND, DLGPROC, w.LPARAM)),
+            ("GetDlgItem", w.HWND, (w.HWND, ctypes.c_int)),
+            ("SendMessageW", LRESULT, (w.HWND, w.UINT, w.WPARAM, w.LPARAM)),
+            ("SetDlgItemTextW", w.BOOL, (w.HWND, ctypes.c_int, w.LPCWSTR)),
+            ("GetWindowTextW", ctypes.c_int, (w.HWND, w.LPWSTR, ctypes.c_int)),
+            ("IsDlgButtonChecked", w.UINT, (w.HWND, ctypes.c_int)),
+            ("InvalidateRect", w.BOOL, (w.HWND, ctypes.c_void_p, w.BOOL)),
+            ("SetFocus", w.HWND, (w.HWND,)),
+            ("SetForegroundWindow", w.BOOL, (w.HWND,)),
+            ("EndDialog", w.BOOL, (w.HWND, LRESULT)),
+            ("GetSysColorBrush", w.HANDLE, (ctypes.c_int,)),
+            ("LoadImageW", w.HANDLE, (w.HINSTANCE, w.LPCWSTR, w.UINT, ctypes.c_int, ctypes.c_int, w.UINT))):
+        fn = getattr(user32, name)
+        fn.restype, fn.argtypes = res, args
+    kernel32.GetModuleHandleW.restype, kernel32.GetModuleHandleW.argtypes = w.HMODULE, (w.LPCWSTR,)
+
+    class ACTCTXW(ctypes.Structure):
+        _fields_ = [("cbSize", w.ULONG), ("dwFlags", w.DWORD), ("lpSource", w.LPCWSTR),
+                    ("wProcessorArchitecture", w.USHORT), ("wLangId", w.WORD),
+                    ("lpAssemblyDirectory", w.LPCWSTR), ("lpResourceName", w.LPCWSTR),
+                    ("lpApplicationName", w.LPCWSTR), ("hModule", w.HMODULE)]
+
+    class INITCOMMONCONTROLSEX(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("dwICC", w.DWORD)]
+
+    class NMHDR(ctypes.Structure):
+        _fields_ = [("hwndFrom", w.HWND), ("idFrom", ctypes.c_size_t), ("code", w.UINT)]
+
+    # Today's look and the link control need Common Controls 6, which Python's
+    # own manifest doesn't ask for: ask for it here.
+    manifest = Path(tempfile.gettempdir()) / f"vt-quarantine-{os.getpid()}.manifest"
+    manifest.write_text(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"><dependency>'
+        '<dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" '
+        'version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+        '</dependentAssembly></dependency></assembly>')
+    kernel32.CreateActCtxW.restype = w.HANDLE
+    ctx = ACTCTXW(ctypes.sizeof(ACTCTXW), 0, str(manifest))
+    handle = kernel32.CreateActCtxW(ctypes.byref(ctx))
+    manifest.unlink(missing_ok=True)
+    cookie = ctypes.c_size_t()
+    if handle and handle != w.HANDLE(-1).value:
+        kernel32.ActivateActCtx(w.HANDLE(handle), ctypes.byref(cookie))
+    with contextlib.suppress(AttributeError):  # Windows 10 1703+: sharp on high-DPI screens
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    comctl32 = ctypes.WinDLL("comctl32")
+    gdi32 = ctypes.WinDLL("gdi32")
+    gdi32.SetTextColor.argtypes = gdi32.SetBkMode.argtypes = (w.HDC, w.DWORD)
+    comctl32.InitCommonControlsEx(ctypes.byref(INITCOMMONCONTROLSEX(8, 0x8000 | 0x4000)))  # LINK, STANDARD
+
+    (INTRO, STEP1, STEP2, STEP3, EDIT, SHOW, ERROR, NOTE, GUIDE) = range(100, 109)
+    IDOK, IDCANCEL = 1, 2
+    links = {STEP1: SIGNUP_URL, STEP2: KEY_PAGE_URL, GUIDE: GUIDE_URL}
+    BUTTON, EDIT_CLASS, STATIC = 0x80, 0x81, 0x82
+    TABSTOP, GROUP = 0x10000, 0x20000
+    # (class, text, id, x, y, width, height, style, extended style) in dialog units
+    items = [
+        (STATIC, "VirusTotal Quarantine needs your free VirusTotal API key to check your downloads.",
+         INTRO, 10, 9, 236, 18, 0, 0),
+        ("SysLink", "1.  Sign in to VirusTotal, or <a>create a free account</a>.", STEP1, 10, 33, 236, 10, TABSTOP, 0),
+        ("SysLink", "2.  Open <a>your API key page</a> and copy the key.", STEP2, 10, 46, 236, 10, TABSTOP, 0),
+        (STATIC, "3.  Paste it here:", STEP3, 10, 59, 236, 10, 0, 0),
+        (EDIT_CLASS, "", EDIT, 10, 71, 188, 14, TABSTOP | GROUP | 0x20 | 0x80, 0x200),  # PASSWORD, AUTOHSCROLL
+        (BUTTON, "Show", SHOW, 206, 73, 40, 10, TABSTOP | 3, 0),  # AUTOCHECKBOX
+        (STATIC, "", ERROR, 10, 89, 236, 18, 0, 0),
+        (STATIC, "It's stored encrypted for your Windows account and only ever sent to VirusTotal.",
+         NOTE, 10, 108, 236, 18, 0, 0),
+        ("SysLink", "<a>Step-by-step guide</a>", GUIDE, 10, 135, 110, 10, TABSTOP, 0),
+        (BUTTON, "Save", IDOK, 142, 132, 50, 14, TABSTOP | GROUP | 1, 0),  # DEFPUSHBUTTON
+        (BUTTON, "Cancel", IDCANCEL, 196, 132, 50, 14, TABSTOP, 0),
+    ]
+
+    def wstr(text):
+        return text.encode("utf-16-le") + b"\0\0"
+
+    # DLGTEMPLATEEX: POPUP | CAPTION | SYSMENU | MODALFRAME | CENTER | SETFONT; shown in the taskbar
+    data = struct.pack("<HHIIIHhhhh", 1, 0xFFFF, 0, 0x40000, 0x80C80000 | 0x80 | 0x800 | 0x40,
+                       len(items), 0, 0, 256, 156)
+    data += b"\0\0\0\0" + wstr(f"{APP}: API key") + struct.pack("<HHBB", 9, 400, 0, 1) + wstr("Segoe UI")
+    for cls, text, ident, x, y, cx, cy, style, exstyle in items:
+        data += b"\0" * (-len(data) % 4)
+        data += struct.pack("<IIIhhhhI", 0, exstyle, 0x50000000 | style, x, y, cx, cy, ident)  # CHILD | VISIBLE
+        data += (struct.pack("<HH", 0xFFFF, cls) if isinstance(cls, int) else wstr(cls)) + wstr(text) + b"\0\0"
+    template = ctypes.create_string_buffer(data)
+
+    saved = []
+    error_brush = user32.GetSysColorBrush(15)  # COLOR_BTNFACE, the dialog's background
+
+    def item(hwnd, ident):
+        return user32.GetDlgItem(hwnd, ident)
+
+    @DLGPROC
+    def proc(hwnd, msg, wparam, lparam):
+        try:
+            if msg == 0x110:  # WM_INITDIALOG
+                icon = Path(__file__).resolve().with_name("vt-quarantine.ico")
+                for size, kind in ((16, 0), (32, 1)):  # WM_SETICON small, big
+                    hicon = user32.LoadImageW(None, str(icon), 1, size, size, 0x10) if icon.exists() else None
+                    if hicon:
+                        user32.SendMessageW(hwnd, 0x80, kind, hicon)
+                edit = item(hwnd, EDIT)
+                user32.SendMessageW(edit, 0xC5, 256, 0)  # EM_SETLIMITTEXT
+                cue = ctypes.create_unicode_buffer("Paste your API key")
+                user32.SendMessageW(edit, 0x1501, 1, ctypes.addressof(cue))  # EM_SETCUEBANNER
+                user32.SetForegroundWindow(hwnd)
+                user32.SetFocus(edit)
+                return 0  # focus set by hand
+            if msg == 0x111:  # WM_COMMAND
+                ident = wparam & 0xFFFF
+                if ident == EDIT and wparam >> 16 == 0x300:  # EN_CHANGE: the old complaint is moot
+                    user32.SetDlgItemTextW(hwnd, ERROR, "")
+                    return 1
+                if ident == SHOW:
+                    edit = item(hwnd, EDIT)
+                    user32.SendMessageW(edit, 0xCC, 0 if user32.IsDlgButtonChecked(hwnd, SHOW) else 0x25CF, 0)
+                    user32.InvalidateRect(edit, None, True)
+                    return 1
+                if ident == IDOK:
+                    buf = ctypes.create_unicode_buffer(300)
+                    user32.GetWindowTextW(item(hwnd, EDIT), buf, 300)
+                    key = parse_key(buf.value)
+                    if not key:
+                        user32.SetDlgItemTextW(
+                            hwnd, ERROR, "That isn't an API key. It's 64 letters and numbers: "
+                            "use the Copy button on your API key page." if buf.value.strip() else
+                            "Paste your API key first.")
+                        user32.SetFocus(item(hwnd, EDIT))
+                        return 1
+                    try:
+                        save_key(key)
+                    except Exception as e:
+                        user32.SetDlgItemTextW(hwnd, ERROR, f"Could not save it: {e}")
+                        return 1
+                    saved.append(True)
+                    user32.EndDialog(hwnd, IDOK)
+                    return 1
+                if ident == IDCANCEL:  # also Esc and the close button
+                    user32.EndDialog(hwnd, IDCANCEL)
+                    return 1
+            if msg == 0x4E:  # WM_NOTIFY
+                hdr = NMHDR.from_address(lparam)
+                if hdr.idFrom in links and hdr.code in (2**32 - 2, 2**32 - 4):  # NM_CLICK, NM_RETURN
+                    open_url(links[hdr.idFrom])
+                    return 1
+            if msg == 0x138 and lparam == item(hwnd, ERROR):  # WM_CTLCOLORSTATIC
+                gdi32.SetTextColor(wparam, 0x1C2BC4)  # red (BGR)
+                gdi32.SetBkMode(wparam, 1)  # transparent
+                return error_brush
+        except Exception as e:
+            log(f"API key window: {e}")
+        return 0
+
+    if user32.DialogBoxIndirectParamW(kernel32.GetModuleHandleW(None), template, None, proc, 0) == -1:
+        log(f"could not open the API key window (error {ctypes.get_last_error()})")
+    return bool(saved)
 
 
 def acquire_lock():
@@ -2727,11 +2888,12 @@ def run():
                                          "Downloads stay quarantined until you enter one.",
                                          "critical", "dialog-error", [("key", "Enter key")])
                 if choice == "key":
-                    python = Path(sys.executable).with_name("python.exe")
-                    subprocess.Popen([str(python if python.exists() else sys.executable),
-                                      str(Path(__file__).resolve()), "--set-key"],
-                                     creationflags=subprocess.CREATE_NEW_CONSOLE)
-                    open_url("https://www.virustotal.com/gui/my-apikey")
+                    # The key window, without a console; its key is picked up as soon as it closes.
+                    pythonw = Path(sys.executable).with_name("pythonw.exe")
+                    warned = True
+                    if subprocess.run([str(pythonw if pythonw.exists() else sys.executable),
+                                       str(Path(__file__).resolve()), "--key-window"]).returncode == 0:
+                        continue
             else:
                 notifier.notify("No VirusTotal API key",
                                 f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
@@ -2784,6 +2946,8 @@ def main():
     parser.add_argument("--keep-data", action="store_true",
                         help=argparse.SUPPRESS)  # installers stopping the old copy for an upgrade
     group.add_argument("--set-key", action="store_true", help="save your VirusTotal API key")
+    group.add_argument("--key-window", action="store_true",
+                       help=argparse.SUPPRESS)  # Windows: the "Enter key" notification's window
     group.add_argument("--check", action="store_true",
                        help="download missing packages and check that notifications work")
     group.add_argument("--test-notification", action="store_true",
@@ -2801,6 +2965,8 @@ def main():
         return uninstall(keep_data=args.keep_data)
     if args.set_key:
         return set_key()
+    if args.key_window:
+        return 0 if WINDOWS and key_dialog() else 1
     if args.check:
         return check()
     if args.test_notification:

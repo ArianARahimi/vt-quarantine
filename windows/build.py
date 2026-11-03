@@ -198,6 +198,7 @@ def wxs(ver, icon, script, python, wheels):
         <Directory Id="INSTALLDIR" Name="vt-quarantine">
           <Component Id="Main" Guid="{COMPONENT_GUID}">
             <File Id="Script" Name="vt-quarantine.py" Source={quoteattr(str(script))}/>
+            <File Id="AppIcon" Name="vt-quarantine.ico" Source={quoteattr(str(icon))}/>
             <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Python" Type="string" Value="[#Pythonw]" KeyPath="yes"/>
             <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="Version" Type="string" Value="{ver}"/>
             <RegistryValue Root="HKCU" Key="Software\\Microsoft\\Windows\\CurrentVersion\\Run" Name="vt-quarantine"
