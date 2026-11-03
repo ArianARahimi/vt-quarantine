@@ -39,10 +39,11 @@ asks for it when it first starts.
 Download **`vt-quarantine-<version>.msi`** from
 [Releases](https://github.com/ArianARahimi/vt-quarantine/releases/latest) and
 run it. It installs for your account only, without administrator rights, and
-starts right away: a notification asks for your API key (**Enter key**).
+starts right away with a small window for your API key: the steps to get one,
+and a box to paste it into.
 
-Windows may warn that the publisher is unknown: click **More info → Run
-anyway**.
+Until the installer is code-signed, Edge holds the download as "not commonly
+downloaded": click **⋯ → Keep**, then **Keep anyway**.
 
 <details>
 <summary>What the <code>.msi</code> installs</summary>
@@ -254,63 +255,43 @@ this version": you're asked again only when the next one comes out.
 ## Known issues
 
 <details>
-<summary><b>Windows</b>: only tested under Wine, not yet on a real PC</summary>
+<summary><b>Windows</b>: tested on Windows 11; a few parts still only under Wine</summary>
 
-Anything Wine can't do, or that only behaves like Windows on a real machine, is
-unverified:
+Tested on a real Windows 11 (in a virtual machine): installing, the API key
+window, notifications and their buttons, checking downloads (with Windows'
+own certificate check), locking files, the quarantine folder (hidden, and made
+again if deleted), browser setup for Chrome, Brave and Opera GX, waiting while
+something is fullscreen, the clipboard, upgrading by hand (the key is kept)
+and uninstalling.
 
-- **Notifications have never been shown on real Windows.** Wine can't display
-  toast notifications, so the buttons (Show report / Delete / Mark as safe,
-  Enter key), notifications that stay on screen until answered, and what
-  happens when one is dismissed or goes to the notification centre are all
-  untested. This is the part most likely to need fixes.
 - **Automatic updates have only run under Wine.** Downloading the new `.msi`
-  and installing it silently passed there, with the program's own code.
-- **Keeping the API key encrypted (DPAPI) has only run under Wine.**
-- **Waiting for fullscreen games hasn't run on real Windows.** It asks Windows
-  the same question Windows asks before showing its own notifications
-  (`SHQueryUserNotificationState`), which Wine doesn't answer the way Windows
-  does.
-- **Locking files hasn't run on real Windows.** It uses `icacls` to deny
-  reading, which Wine only partly has; it's covered by unit tests only.
-- **Browser setup on real Windows is tested with Chrome and Brave only**
-  (Windows 11: set up while closed, and right after closing when open; then a
-  real download went through quarantine). Firefox, Waterfox, LibreWolf, Floorp,
-  Chromium and Vivaldi have unit tests only, and so does Copy folder (PowerShell).
+  and installing it silently passed there; on Windows they need a newer
+  release to update to.
+- **The installer is unsigned.** Edge holds the download ("isn't commonly
+  downloaded": **⋯ → Keep → Keep anyway**) until it's code-signed and known.
+- **Edge isn't set up by itself yet.** Its Startup boost keeps it running in the
+  background with every window closed, so there's no moment to change its
+  setting safely. As the default browser it gets the Copy folder notification.
+- **Firefox, Waterfox, LibreWolf, Floorp, Chromium, Vivaldi and Opera** are set
+  up the same way as the tested browsers, but only unit tests have run them.
 - **Opera GX asks where to save programs** (.exe, .msi) even with "Ask where to
   save" off, and Opera probably does too. The box opens in the quarantine
   folder, so Save keeps the file in quarantine; other downloads go there
   without asking.
-- **Edge isn't set up by itself yet.** Its Startup boost keeps it running in the
-  background with every window closed, so there's no moment to change its
-  setting safely. As the default browser it gets the Copy folder notification.
-- **Uninstalling while a Chromium-based browser (Chrome, Brave, Opera) is open leaves its
-  downloads going to the quarantine folder.** It would write the old setting
-  back over the change. Close it first, or set the folder back in its settings.
-- **Running a newer `.msi` by hand asks to close "Python".** That's
-  vt-quarantine itself; OK closes it and the upgrade goes on.
-- **The installer is unsigned.** SmartScreen shows "Windows protected your
-  PC" (More info → Run anyway) until it's code-signed.
+- **Uninstalling while a Chromium-based browser (Chrome, Brave, Opera) is open
+  leaves its downloads going to the quarantine folder**, since it would write
+  the old setting back over the change. The folder is then left in sight in
+  your Downloads folder; set the browser's download folder back in its
+  settings, or close it before uninstalling.
+- **Upgrading by hand from 2.2.x asks to close "Python" once.** That's the old
+  version's installer; OK closes vt-quarantine and the upgrade goes on. Newer
+  installers stop it themselves.
 - **64-bit Windows only.** The `.msi` carries 64-bit Python and refuses to
   install on 32-bit Windows. Windows on ARM should run it through emulation,
   but that's untested.
-- **Starting right after installing is untested on real Windows.** The `.msi`
-  starts it from the install and again from the installer window, and an
-  automatic update starts it once more after installing; under Wine only the
-  silent paths could be tested. If it doesn't start, it will at the next
-  sign-in.
-- **Upgrading by running a newer `.msi` by hand relies on Windows saying it's
-  an upgrade.** Wine doesn't, so there the old version's uninstall step deleted
-  the API key. Automatic updates leave the program a note and keep everything
-  either way. Upgrading a 2.1.2-or-older setup.exe install by hand lost the key
-  under Wine too (a notification then asks for it again).
-- **Windows Installer's window without dialogs is untested.** The `.msi` has no
-  pages of its own; Windows should show only a progress bar.
 - **Version 2.1.2 and older don't update to 2.2.0 by themselves on Windows.**
   They look for a `setup.exe`, which releases no longer have. Install the `.msi`
   over them once.
-- **Under Wine only:** Apps-list entries are stored in a different registry
-  location. Not expected on real Windows.
 </details>
 
 <details>

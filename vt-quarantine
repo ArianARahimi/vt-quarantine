@@ -226,6 +226,7 @@ QUARANTINE = RELEASE_DIR / ".quarantine"
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
+KEY_ASKED = CONFIG_DIR / "api_key.asked"  # Windows: the key window opened by itself once
 LIB_ROOT = DATA_DIR / "lib"
 BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the .msi
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
@@ -719,7 +720,7 @@ class WindowsNotifier(Notifier):
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUMID_KEY) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP)
         manager = ToastNotificationManager.get_default()
-        self.notifier = manager.create_toast_notifier_with_id(self.APP_ID)
+        self.notifier = manager.create_toast_notifier(self.APP_ID)
         self.lock = threading.Lock()
         # Toasts must stay referenced, or their events stop firing.
         self.live = {}
@@ -1087,12 +1088,19 @@ def make_quarantine():
     if not WINDOWS:
         os.chmod(QUARANTINE, 0o700)
         return
+    set_hidden(QUARANTINE, True)
+
+
+def set_hidden(path, hidden):
+    """Windows: hide or show a file or folder in Explorer."""
     import ctypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetFileAttributesW.restype = ctypes.c_uint32
-    attrs = kernel32.GetFileAttributesW(str(QUARANTINE))
-    if attrs != 0xFFFFFFFF and not attrs & 2 and not kernel32.SetFileAttributesW(str(QUARANTINE), attrs | 2):
-        log(f"could not hide {QUARANTINE} (error {ctypes.get_last_error()})")
+    attrs = kernel32.GetFileAttributesW(str(path))
+    if attrs == 0xFFFFFFFF or bool(attrs & 2) == hidden:
+        return
+    if not kernel32.SetFileAttributesW(str(path), attrs | 2 if hidden else attrs & ~2):
+        log(f"could not {'hide' if hidden else 'show'} {path} (error {ctypes.get_last_error()})")
 
 
 def signature(path):
@@ -2116,14 +2124,56 @@ def default_browser():
     return next((name for key, name in BROWSER_NAMES if key in ident), None)
 
 
+def windows_clipboard(text):
+    """Put text on the Windows clipboard (Win32, no helper program)."""
+    import ctypes
+    from ctypes import wintypes as w
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.CreateWindowExW.restype = w.HWND
+    user32.CreateWindowExW.argtypes = (w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
+    user32.DestroyWindow.argtypes = user32.OpenClipboard.argtypes = (w.HWND,)
+    user32.SetClipboardData.restype = w.HANDLE
+    user32.SetClipboardData.argtypes = (w.UINT, w.HANDLE)
+    kernel32.GlobalAlloc.restype = w.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = (w.UINT, ctypes.c_size_t)
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = (w.HGLOBAL,)
+    data = text.encode("utf-16-le") + b"\0\0"
+    # The clipboard needs an owner window, or what's put there may be refused: a
+    # hidden message-only one.
+    window = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, w.HWND(-3), None, None, None)
+    try:
+        for _ in range(20):  # another program may hold the clipboard for a moment
+            if user32.OpenClipboard(window):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+        try:
+            user32.EmptyClipboard()
+            memory = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+            if not memory:
+                return False
+            ctypes.memmove(kernel32.GlobalLock(memory), data, len(data))
+            kernel32.GlobalUnlock(memory)
+            if not user32.SetClipboardData(13, memory):  # CF_UNICODETEXT; the system owns it once set
+                kernel32.GlobalFree(memory)
+                return False
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if window:
+            user32.DestroyWindow(window)
+
+
 def copy_to_clipboard(text):
     """True if the text is now on the clipboard."""
     try:
         if WINDOWS:
-            return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                   "Set-Clipboard -Value $env:VTQ_CLIPBOARD"],
-                                  env={**os.environ, "VTQ_CLIPBOARD": text}, capture_output=True,
-                                  creationflags=NO_WINDOW, timeout=30).returncode == 0
+            return windows_clipboard(text)
         if MACOS:
             return subprocess.run(["pbcopy"], input=text.encode(), capture_output=True,
                                   timeout=10).returncode == 0
@@ -2301,10 +2351,13 @@ def watch_browsers():
 
 
 def undo_browser_setup():
+    """Put every browser's download settings back. Returns the browsers that were
+    open, which still save into the quarantine folder."""
+    left = []
     try:
         record = json.loads(BROWSER_SETUP.read_text())
     except (OSError, ValueError):
-        return
+        return left
     for entry in record.get("firefox", []):
         folder = Path(entry["profile"])
         if folder.is_dir():
@@ -2318,12 +2371,15 @@ def undo_browser_setup():
         if chromium_running(prefs.parent.parent):
             print(f"{browser} is open, so its downloads still go to {QUARANTINE}: "
                   f"change that in its settings (Downloads)")
+            left.append(browser)
             continue
         try:
             undo_chromium_profile(prefs, entry.get("before", {}))
             print(f"Put back the download settings of {prefs.parent}")
         except (OSError, ValueError) as e:
             print(f"Could not put back the download settings of {prefs.parent}: {e}")
+            left.append(browser)
+    return left
 
 
 # --- API key -------------------------------------------------------------------------
@@ -2633,6 +2689,14 @@ KEY_PAGE_URL = "https://www.virustotal.com/gui/my-apikey"
 GUIDE_URL = "https://github.com/ArianARahimi/vt-quarantine#install"
 
 
+def key_window():
+    """Windows: run the key window (without a console) and wait for it; True if a
+    key was saved, which is then picked up straight away."""
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    return subprocess.run([str(pythonw if pythonw.exists() else sys.executable),
+                           str(Path(__file__).resolve()), "--key-window"]).returncode == 0
+
+
 def parse_key(text):
     """The API key in pasted text (spaces and line breaks dropped), or None."""
     key = re.sub(r"\s", "", text or "")
@@ -2666,6 +2730,9 @@ def key_dialog():
             ("InvalidateRect", w.BOOL, (w.HWND, ctypes.c_void_p, w.BOOL)),
             ("SetFocus", w.HWND, (w.HWND,)),
             ("SetForegroundWindow", w.BOOL, (w.HWND,)),
+            ("SetWindowPos", w.BOOL, (w.HWND, w.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, w.UINT)),
+            ("SetTimer", ctypes.c_size_t, (w.HWND, ctypes.c_size_t, w.UINT, ctypes.c_void_p)),
+            ("KillTimer", w.BOOL, (w.HWND, ctypes.c_size_t)),
             ("EndDialog", w.BOOL, (w.HWND, LRESULT)),
             ("GetSysColorBrush", w.HANDLE, (ctypes.c_int,)),
             ("LoadImageW", w.HANDLE, (w.HINSTANCE, w.LPCWSTR, w.UINT, ctypes.c_int, ctypes.c_int, w.UINT))):
@@ -2762,9 +2829,17 @@ def key_dialog():
                 user32.SendMessageW(edit, 0xC5, 256, 0)  # EM_SETLIMITTEXT
                 cue = ctypes.create_unicode_buffer("Paste your API key")
                 user32.SendMessageW(edit, 0x1501, 1, ctypes.addressof(cue))  # EM_SETCUEBANNER
-                user32.SetForegroundWindow(hwnd)
+                # Opened by a program in the background, Windows won't bring it to the front:
+                # on top of everything for a moment, then an ordinary window again.
+                if not user32.SetForegroundWindow(hwnd):
+                    user32.SetWindowPos(hwnd, w.HWND(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10)  # TOPMOST, no size/move/activate
+                    user32.SetTimer(hwnd, 1, 700, None)
                 user32.SetFocus(edit)
                 return 0  # focus set by hand
+            if msg == 0x113 and wparam == 1:  # WM_TIMER
+                user32.KillTimer(hwnd, 1)
+                user32.SetWindowPos(hwnd, w.HWND(-2), 0, 0, 0, 0, 0x1 | 0x2 | 0x10)  # NOTOPMOST
+                return 1
             if msg == 0x111:  # WM_COMMAND
                 ident = wparam & 0xFFFF
                 if ident == EDIT and wparam >> 16 == 0x300:  # EN_CHANGE: the old complaint is moot
@@ -3066,13 +3141,18 @@ def uninstall(keep_data=False):
         return
     # Forget everything: browser settings put back, files in quarantine unlocked, and
     # the API key, settings, log and downloaded packages deleted. Never the downloads.
-    undo_browser_setup()
+    left = undo_browser_setup()
     unlock_quarantine()
     forget_key()
     for d in (CONFIG_DIR, DATA_DIR):
         shutil.rmtree(d, ignore_errors=True)
-    with contextlib.suppress(OSError):
-        QUARANTINE.rmdir()  # only if empty
+    if not left:
+        with contextlib.suppress(OSError):
+            QUARANTINE.rmdir()  # only if empty
+    if WINDOWS and QUARANTINE.is_dir():
+        # Left behind (with files, or because a browser still saves there): in sight,
+        # so nothing seems lost.
+        set_hidden(QUARANTINE, False)
     print("Deleted your API key, settings and log.")
     if QUARANTINE.is_dir() and any(QUARANTINE.iterdir()):
         print(f"Files still in quarantine are unlocked and left in place: {QUARANTINE}")
@@ -3139,16 +3219,19 @@ def run():
             log(f"no API key at {KEY_FILE}")
             wait_for_free_screen("the API key warning")
             if WINDOWS:
+                warned = True
+                # Right after installing: the key window itself, once. After that (or if it's
+                # closed without a key) a notification that opens it.
+                if not KEY_ASKED.exists():
+                    KEY_ASKED.parent.mkdir(parents=True, exist_ok=True)
+                    KEY_ASKED.touch()
+                    if key_window():
+                        continue
                 choice = notifier.notify("No VirusTotal API key",
                                          "Downloads stay quarantined until you enter one.",
                                          "critical", "dialog-error", [("key", "Enter key")])
-                if choice == "key":
-                    # The key window, without a console; its key is picked up as soon as it closes.
-                    pythonw = Path(sys.executable).with_name("pythonw.exe")
-                    warned = True
-                    if subprocess.run([str(pythonw if pythonw.exists() else sys.executable),
-                                       str(Path(__file__).resolve()), "--key-window"]).returncode == 0:
-                        continue
+                if choice == "key" and key_window():
+                    continue
             else:
                 notifier.notify("No VirusTotal API key",
                                 f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"

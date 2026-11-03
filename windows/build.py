@@ -190,6 +190,9 @@ def wxs(ver, icon, script, python, wheels):
     <Property Id="ARPPRODUCTICON" Value="vtq.ico"/>
     <Property Id="ARPNOMODIFY" Value="1"/>
     <Property Id="ARPNOREPAIR" Value="1"/>
+    <!-- No "close these applications: Python" box: the old version's uninstall stops the
+         running copy itself (StopForUpgrade) before any file is replaced. -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable"/>
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/ArianARahimi/vt-quarantine"/>
     <Property Id="ARPHELPLINK" Value="https://github.com/ArianARahimi/vt-quarantine#readme"/>
     <Condition Message="VirusTotal Quarantine needs 64-bit Windows.">Installed OR VersionNT64</Condition>
