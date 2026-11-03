@@ -242,8 +242,10 @@ def wxs(ver, icon, script, python, wheels):
     </InstallUISequence>
     <InstallExecuteSequence>
       <Custom Action="SetPython" After="CostFinalize"/>
-      <Custom Action="Purge" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="StopForUpgrade" Before="RemoveFiles">REMOVE="ALL" AND UPGRADINGPRODUCTCODE</Custom>
+      <!-- Explicit numbers: wixl puts Before="RemoveFiles" ahead of InstallInitialize, where
+           Windows refuses a deferred action (error 2762) and the whole uninstall fails. -->
+      <Custom Action="Purge" Sequence="3490">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="StopForUpgrade" Sequence="3491">REMOVE="ALL" AND UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="Start" After="InstallFinalize">NOT REMOVE</Custom>
     </InstallExecuteSequence>
     <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/><ComponentRef Id="Wheels"/></Feature>
@@ -261,6 +263,20 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def check_sequence(msi):
+    """Every deferred action must run between InstallInitialize and InstallFinalize,
+    or real Windows fails the install or uninstall (Wine doesn't mind)."""
+    table = subprocess.run([os.environ.get("MSIINFO", "msiinfo"), "export", str(msi), "InstallExecuteSequence"],
+                           capture_output=True, text=True, check=True).stdout
+    seq = {}
+    for line in table.splitlines()[3:]:
+        action, _condition, number = line.split("\t")
+        seq[action] = int(number)
+    for action in ("Purge", "StopForUpgrade"):
+        if not seq["InstallInitialize"] < seq[action] < seq["RemoveFiles"]:
+            sys.exit(f"{action} is at {seq[action]}, outside InstallInitialize..RemoveFiles")
+
+
 def main():
     if len(sys.argv) > 2 or sys.argv[1:] not in ([], ["msi"]):
         sys.exit(__doc__)
@@ -272,6 +288,7 @@ def main():
     source = BUILD / "wxs"
     source.write_text(wxs(ver, icon, ROOT / "vt-quarantine", python_files(), wheel_files()))
     run([os.environ.get("WIXL", "wixl"), "-a", "x64", "-o", msi, source])
+    check_sequence(msi)
     print(f"Built {msi}")
 
 

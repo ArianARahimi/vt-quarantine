@@ -94,6 +94,10 @@ WHEELS = {
             'typing_extensions-4.16.0-py3-none-any.whl':
                 '481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8',
         }),
+        ('truststore', 'truststore', {
+            'truststore-0.10.5-py3-none-any.whl':
+                '9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c',
+        }),
         ('winrt.runtime', 'winrt-runtime', {
             'winrt_runtime-4.0.3-cp311-cp311-win32.whl':
                 '8dab9b3f240891ae5b331f62277cb48a387777cb6f9099b5409b2ac4822fb5f9',
@@ -434,8 +438,15 @@ def remove_old_libs():
 
 
 def install_requirements():
-    """Make the pinned packages importable, fetching them into lib_dir() if needed.
-    Returns False (after logging why) if that didn't work."""
+    """Make the pinned packages importable (fetching them into lib_dir() if needed)
+    and start using them. Returns False (after logging why) if that didn't work."""
+    if not _install_requirements():
+        return False
+    use_system_tls()
+    return True
+
+
+def _install_requirements():
     wheels = pinned_wheels()
     if not wheels:
         return True
@@ -1503,6 +1514,25 @@ class GitHubRedirects(urllib.request.HTTPRedirectHandler):
 
 
 github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context), GitHubRedirects)
+
+
+def use_system_tls():
+    """Windows: check certificates the way Windows does (truststore), which fetches
+    root certificates it doesn't have yet. Python's own check only sees the few a
+    fresh Windows starts with, which can leave out VirusTotal's. Needs the pinned
+    packages, so it's switched on once they're in."""
+    global vt_opener, pypi_opener, github_opener
+    if not WINDOWS:
+        return
+    try:
+        import truststore
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception as e:
+        log(f"can't check certificates through Windows ({e}), using Python's own list")
+        return
+    vt_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirects)
+    pypi_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+    github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), GitHubRedirects)
 
 
 def github_get(url, limit=UPDATE_MAX_BYTES):
