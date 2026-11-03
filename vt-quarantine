@@ -76,6 +76,9 @@ EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xb
 PARTIAL_SUFFIXES = (".part", ".crdownload", ".opdownload", ".download", ".partial")
 # Folder metadata the file manager may drop into the quarantine folder.
 IGNORED_NAMES = {"desktop.ini", "thumbs.db", ".directory", ".ds_store"}
+# Chrome, Edge and Brave download into "<random uuid>.tmp" while their "Save as" box
+# is open or a warning waits for an answer, and rename it when that's settled.
+CHROMIUM_PENDING = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp")
 
 # Third-party packages, pinned to exact wheels: (module to import, PyPI name,
 # {wheel filename: SHA-256}). They are fetched from PyPI on first run (the Windows
@@ -1176,7 +1179,7 @@ def detection_summary(stats, results):
 
 def is_candidate(name):
     lower = name.lower()
-    return not lower.endswith(PARTIAL_SUFFIXES) and lower not in IGNORED_NAMES
+    return not (lower.endswith(PARTIAL_SUFFIXES) or lower in IGNORED_NAMES or CHROMIUM_PENDING.fullmatch(lower))
 
 
 SAFE_LIST = CONFIG_DIR / "marked-safe"
@@ -1763,7 +1766,7 @@ def set_auto_update(state):
 # each profile's user.js if it's Firefox-based. Others can't be set up safely from
 # outside, so a notification tells how. --uninstall puts the profiles back as they were.
 
-BROWSER_SETUP = CONFIG_DIR / "browser-setup.json"  # what the first run changed
+BROWSER_SETUP = CONFIG_DIR / "browser-setup.json"  # what the browser setup changed
 USER_JS_BEGIN = "// vt-quarantine: begin (vt-quarantine --uninstall removes this)"
 USER_JS_END = "// vt-quarantine: end"
 USER_JS_RESTORE = ("// vt-quarantine was uninstalled while this browser was open: these lines put the\n"
@@ -1934,6 +1937,134 @@ def undo_firefox_profile(folder, before):
 
 # Keywords in what the system names its default browser (a .desktop file on Linux, a
 # ProgId on Windows, a bundle id on macOS), most specific first.
+def chromium_roots():
+    """(browser, user data folder) for the Chromium-based browsers set up from outside.
+    (Edge isn't yet: its Startup boost keeps it running with no window open.)"""
+    if WINDOWS:
+        base = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
+        return [("Chrome", base / "Google" / "Chrome" / "User Data"),
+                ("Chrome", base / "Google" / "Chrome Beta" / "User Data"),
+                ("Chrome", base / "Google" / "Chrome SxS" / "User Data"),
+                ("Chromium", base / "Chromium" / "User Data"),
+                ("Brave", base / "BraveSoftware" / "Brave-Browser" / "User Data"),
+                ("Vivaldi", base / "Vivaldi" / "User Data")]
+    if MACOS:
+        base = HOME / "Library" / "Application Support"
+        return [("Chrome", base / "Google" / "Chrome"), ("Chrome", base / "Google" / "Chrome Beta"),
+                ("Chromium", base / "Chromium"), ("Brave", base / "BraveSoftware" / "Brave-Browser"),
+                ("Vivaldi", base / "Vivaldi")]
+    config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
+    flatpak = HOME / ".var" / "app"
+    return [("Chrome", config / "google-chrome"), ("Chrome", config / "google-chrome-beta"),
+            ("Chrome", config / "google-chrome-unstable"), ("Chromium", config / "chromium"),
+            ("Brave", config / "BraveSoftware" / "Brave-Browser"), ("Vivaldi", config / "vivaldi"),
+            ("Chrome", flatpak / "com.google.Chrome" / "config" / "google-chrome"),
+            ("Chromium", flatpak / "org.chromium.Chromium" / "config" / "chromium"),
+            ("Brave", flatpak / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser"),
+            ("Chromium", HOME / "snap" / "chromium" / "common" / "chromium")]
+
+
+def chromium_profiles():
+    """(browser, user data folder, Preferences file) for every profile of every
+    Chromium-based browser that has been started."""
+    found = []
+    for browser, root in chromium_roots():
+        try:
+            names = list(json.loads((root / "Local State").read_text(encoding="utf-8"))
+                         .get("profile", {}).get("info_cache", {})) or ["Default"]
+        except (OSError, ValueError, AttributeError):
+            continue  # never started
+        for name in names:
+            prefs = root / name / "Preferences"
+            if prefs.is_file():
+                found.append((browser, root, prefs))
+    return found
+
+
+def chromium_running(root):
+    """Is the browser using this user data folder running? (It writes Preferences
+    from memory, so changes made meanwhile would be lost.)"""
+    if WINDOWS:
+        try:  # held open without sharing while it runs
+            with open(root / "lockfile", "r+"):
+                return False
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            return True
+    # A symlink to "host-pid", removed when it quits. One left by a crash just
+    # means waiting for the next clean exit.
+    return os.path.lexists(root / "SingletonLock")
+
+
+CHROMIUM_PREFS = ("download.default_directory", "download.directory_upgrade",
+                  "download.prompt_for_download", "savefile.default_directory")
+
+
+def same_path(value):
+    return isinstance(value, str) and os.path.normcase(os.path.normpath(value)) == \
+        os.path.normcase(os.path.normpath(str(QUARANTINE)))
+
+
+def write_json(path, data):
+    tmp = path.with_name(path.name + ".vtq-new")
+    tmp.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def chromium_points_here(prefs):
+    try:
+        data = json.loads(prefs.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    download = data.get("download")
+    return isinstance(download, dict) and same_path(download.get("default_directory"))
+
+
+def setup_chromium_profile(prefs):
+    """Downloads (and Save as) of a closed Chromium-based browser profile go to
+    quarantine, without asking where. Returns the settings it had ({pref: value}),
+    or None if it already pointed there."""
+    data = json.loads(prefs.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("not a preferences file")
+    download, savefile = data.get("download"), data.get("savefile")
+    download = download if isinstance(download, dict) else {}
+    savefile = savefile if isinstance(savefile, dict) else {}
+    if same_path(download.get("default_directory")):
+        return None
+    sections = {"download": download, "savefile": savefile}
+    before = {}
+    for key in CHROMIUM_PREFS:
+        section, name = key.split(".")
+        if name in sections[section]:
+            before[key] = sections[section][name]
+    download.update(default_directory=str(QUARANTINE), directory_upgrade=True, prompt_for_download=False)
+    savefile["default_directory"] = str(QUARANTINE)
+    data["download"], data["savefile"] = download, savefile
+    write_json(prefs, data)
+    return before
+
+
+def undo_chromium_profile(prefs, before):
+    """Put back what setup_chromium_profile() changed, unless the download folder was
+    changed since. Only with the browser closed (it would write over the change)."""
+    data = json.loads(prefs.read_text(encoding="utf-8"))
+    download = data.get("download") if isinstance(data, dict) else None
+    if not isinstance(download, dict) or not same_path(download.get("default_directory")):
+        return  # changed by hand since: leave it
+    for key in CHROMIUM_PREFS:
+        section, name = key.split(".")
+        part = data.setdefault(section, {})
+        if key in before:
+            part[name] = before[key]
+        else:
+            part.pop(name, None)
+        if not part:
+            del data[section]
+    write_json(prefs, data)
+
+
 BROWSER_NAMES = (("waterfox", "Waterfox"), ("librewolf", "LibreWolf"), ("floorp", "Floorp"),
                  ("firefox", "Firefox"), ("chromium", "Chromium"), ("chrome", "Chrome"),
                  ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("opera", "Opera"),
@@ -2004,13 +2135,23 @@ def copy_to_clipboard(text):
         return False
 
 
-def setup_browsers():
-    """Once, on the first run: send the default browser's downloads to quarantine.
-    One notification at most, about that browser only."""
-    browser = default_browser()
-    record = {"browser": browser, "firefox": []}
-    profiles = firefox_profiles(browser) if browser in FIREFOX_BASED else []
-    for _, folder in profiles:
+def names(items):
+    """"Chrome", "Chrome and Brave", "Chrome, Brave and Firefox"."""
+    items = list(dict.fromkeys(items))
+    return " and ".join(items) if len(items) < 3 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def browser_pass(record):
+    """Send downloads of every browser profile not seen before to quarantine. A
+    profile is set up once: if its folder is changed by hand later, that stays.
+    Returns (browsers set up now, browsers waiting to be closed, browsers covered)."""
+    done_ff = {entry["profile"] for entry in record.setdefault("firefox", [])}
+    done_cr = {entry["prefs"] for entry in record.setdefault("chromium", [])}
+    set_up, waiting, covered = [], [], []
+    for browser, folder in firefox_profiles():
+        covered.append(browser)
+        if str(folder) in done_ff:
+            continue
         try:
             before = setup_firefox_profile(folder)
         except (OSError, ValueError) as e:
@@ -2019,16 +2160,50 @@ def setup_browsers():
         if before is not None:
             record["firefox"].append({"profile": str(folder), "before": before})
             log(f"set up {browser} profile {folder}")
+            # Taken from user.js at its next start.
+            (waiting if profile_in_use(folder) else set_up).append(browser)
+    for browser, root, prefs in chromium_profiles():
+        covered.append(browser)
+        if str(prefs) in done_cr or chromium_points_here(prefs):
+            continue
+        if chromium_running(root):
+            waiting.append(browser)
+            continue
+        try:
+            before = setup_chromium_profile(prefs)
+        except (OSError, ValueError) as e:
+            log(f"could not set up {browser} profile {prefs.parent}: {e}")
+            continue
+        if before is not None:
+            record["chromium"].append({"browser": browser, "prefs": str(prefs), "before": before})
+            log(f"set up {browser} profile {prefs.parent}")
+            set_up.append(browser)
+    return set_up, waiting, covered
+
+
+def save_browser_record(record):
     BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
     BROWSER_SETUP.write_text(json.dumps(record, indent=1))
-    if profiles:
-        if record["firefox"]:  # nothing to say if it was set up already
-            wait_for_free_screen("browser setup")
-            notifier.notify(f"Downloads from {browser} now go to quarantine",
-                            f"Restart {browser} for this to take effect.", "normal", "security-high")
-        return
+
+
+def setup_browsers():
+    """The first run: every browser's downloads go to quarantine, with one
+    notification at most. Only a default browser that can't be set up from outside
+    (or hasn't been started yet) brings the steps to do it by hand.
+    Returns whether a browser still has to be closed for its setup."""
+    browser = default_browser()
+    record = {"browser": browser, "firefox": [], "chromium": []}
+    set_up, waiting, covered = browser_pass(record)
+    save_browser_record(record)
     wait_for_free_screen("browser setup")
-    ask_to_set_folder(browser)
+    if browser not in covered:
+        ask_to_set_folder(browser)
+    elif set_up or waiting:
+        restart = f"Restart {names(waiting)} for this to take effect." if waiting else \
+            "Each download is checked before it reaches your Downloads folder."
+        notifier.notify(f"Downloads from {names(set_up + waiting)} now go to quarantine",
+                        restart, "normal", "security-high")
+    return bool(waiting)
 
 
 def ask_to_set_folder(browser):
@@ -2092,11 +2267,28 @@ def tell_updated():
                     expire=6000)
 
 
-def first_run_browser_setup():
+def watch_browsers():
+    """Background: the first run's setup, then quietly the same for browsers that
+    were open (once they close), installed later, or given a new profile."""
     try:
-        setup_browsers()
+        waiting = setup_browsers() if not BROWSER_SETUP.exists() else True
     except Exception as e:
         log(f"browser setup failed: {e}")
+        waiting = True
+    while True:
+        # Often while a browser is waiting to be closed: it may be opened again soon.
+        time.sleep(2 if waiting else 300)
+        try:
+            try:
+                record = json.loads(BROWSER_SETUP.read_text())
+            except (OSError, ValueError):
+                record = {}
+            set_up, still, _ = browser_pass(record)
+            if set_up:
+                save_browser_record(record)
+            waiting = bool(still)
+        except Exception as e:
+            log(f"browser setup failed: {e}")
 
 
 def undo_browser_setup():
@@ -2109,6 +2301,20 @@ def undo_browser_setup():
         if folder.is_dir():
             undo_firefox_profile(folder, entry.get("before", {}))
             print(f"Put back the download settings of {folder}")
+    for entry in record.get("chromium", []):
+        prefs = Path(entry["prefs"])
+        if not prefs.is_file():
+            continue
+        browser = entry.get("browser", "the browser")
+        if chromium_running(prefs.parent.parent):
+            print(f"{browser} is open, so its downloads still go to {QUARANTINE}: "
+                  f"change that in its settings (Downloads)")
+            continue
+        try:
+            undo_chromium_profile(prefs, entry.get("before", {}))
+            print(f"Put back the download settings of {prefs.parent}")
+        except (OSError, ValueError) as e:
+            print(f"Could not put back the download settings of {prefs.parent}: {e}")
 
 
 # --- API key -------------------------------------------------------------------------
@@ -2955,8 +3161,7 @@ def run():
         for old in DATA_DIR.glob(pattern):
             with contextlib.suppress(OSError):
                 old.unlink()
-    if not BROWSER_SETUP.exists():  # the first run
-        threading.Thread(target=first_run_browser_setup, daemon=True).start()
+    threading.Thread(target=watch_browsers, daemon=True).start()
     updater = Updater()
     while True:
         try:

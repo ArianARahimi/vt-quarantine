@@ -86,17 +86,22 @@ double-click **`install.command`**. The first time, right-click it and choose
 
 ### Browser setup
 
-Your browser needs to save downloads into the quarantine folder. The first time
-vt-quarantine runs, it takes care of your **default browser**:
+Your browsers need to save downloads into the quarantine folder. vt-quarantine
+sets up **every browser it finds**, in every profile, by itself:
 
-- **Firefox, Waterfox, LibreWolf or Floorp** is set up for you, in every
-  profile. Restart it for this to take effect.
-- **Any other browser** can't be changed safely from outside, so one
-  notification shows the folder with a **Copy folder** button. Paste it into the
-  browser's download setting (see below).
+- **Chrome, Brave, Chromium and Vivaldi** while they're closed. One that's open
+  is set up the moment you close it, so restart it once. "Ask where to save each
+  file" is turned off, since a save box lets a download land anywhere.
+- **Firefox, Waterfox, LibreWolf and Floorp** take the setting at their next
+  start.
+- A browser you install or start for the first time later is set up quietly.
 
-Other browsers you use need the same setting by hand. Uninstalling puts the
-Firefox settings back as they were.
+Each profile is set up once: if you change its download folder afterwards, that
+stays. One notification says what was set up. Only a **default browser that
+can't be set up from outside** (Edge for now, Safari, Opera) gets a
+notification with the folder and a **Copy folder** button instead; paste it into
+the browser's download setting (see below). Uninstalling puts every browser's
+settings back as they were.
 
 <details>
 <summary>Setting the folder by hand</summary>
@@ -266,9 +271,20 @@ unverified:
   the same question Windows asks before showing its own notifications
   (`SHQueryUserNotificationState`), which Wine doesn't answer the way Windows
   does.
-- **Locking files and the browser setup haven't run on real Windows.** Locking
-  uses `icacls` to deny reading, and Copy folder uses PowerShell; under Wine
-  both are only partly there. Both are covered by unit tests only.
+- **Locking files hasn't run on real Windows.** It uses `icacls` to deny
+  reading, which Wine only partly has; it's covered by unit tests only.
+- **Browser setup on real Windows is tested with Chrome and Brave only**
+  (Windows 11: set up while closed, and right after closing when open; then a
+  real download went through quarantine). Firefox, Waterfox, LibreWolf, Floorp,
+  Chromium and Vivaldi have unit tests only, and so does Copy folder (PowerShell).
+- **Edge isn't set up by itself yet.** Its Startup boost keeps it running in the
+  background with every window closed, so there's no moment to change its
+  setting safely. As the default browser it gets the Copy folder notification.
+- **Uninstalling while Chrome, Brave, Chromium or Vivaldi is open leaves its
+  downloads going to the quarantine folder.** It would write the old setting
+  back over the change. Close it first, or set the folder back in its settings.
+- **Running a newer `.msi` by hand asks to close "Python".** That's
+  vt-quarantine itself; OK closes it and the upgrade goes on.
 - **The installer is unsigned.** SmartScreen shows "Windows protected your
   PC" (More info → Run anyway) until it's code-signed.
 - **64-bit Windows only.** The `.msi` carries 64-bit Python and refuses to
@@ -284,8 +300,6 @@ unverified:
   the API key. Automatic updates leave the program a note and keep everything
   either way. Upgrading a 2.1.2-or-older setup.exe install by hand lost the key
   under Wine too (a notification then asks for it again).
-- **The "Enter key" window is untested.** If no API key is set, a notification
-  button opens a window to type it in, which depends on notifications working.
 - **Windows Installer's window without dialogs is untested.** The `.msi` has no
   pages of its own; Windows should show only a progress bar.
 - **Version 2.1.2 and older don't update to 2.2.0 by themselves on Windows.**
@@ -308,8 +322,10 @@ unverified:
 - **An update from your package manager takes effect at your next sign-in.**
   `systemctl --user restart vt-quarantine` switches straight away. Updates
   through the notification restart it themselves.
-- **Setup for a Chrome-family default browser has only been tested in unit
-  tests.** The default browser is found through `xdg-settings`.
+- **Setting up Chrome, Brave, Chromium and Vivaldi on Linux has only been
+  tested in unit tests** (on Windows it has run for real). It knows the usual
+  folders, Flatpak and the Chromium Snap. The default browser is found through
+  `xdg-settings`.
 - **Remove the package only after `vt-quarantine --uninstall`.** Otherwise it
   keeps running until you sign out, and systemd warns about a leftover link.
 </details>
