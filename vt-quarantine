@@ -1901,6 +1901,23 @@ def profile_in_use(folder):
         return True
 
 
+def undo_firefox_handlers(folder, before):
+    """Put back the file handlers firefox_auto_open_off() changed, where they're
+    still "save" (only with the browser closed: it keeps its own copy)."""
+    if not before or profile_in_use(folder):
+        return
+    handlers = folder / "handlers.json"
+    try:
+        data = json.loads(handlers.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    types = data.get("mimeTypes", {})
+    for mime, handler in before.items():
+        if isinstance(types.get(mime), dict) and types[mime].get("action") == 0:
+            types[mime] = handler
+    write_json(handlers, data)
+
+
 def undo_firefox_profile(folder, before):
     """Take the setup out of user.js and put the earlier download settings back."""
     user_js = folder / "user.js"
@@ -1947,12 +1964,12 @@ def undo_firefox_profile(folder, before):
 # ProgId on Windows, a bundle id on macOS), most specific first.
 def chromium_roots():
     """(browser, user data folder) for the Chromium-based browsers set up from outside
-    (Opera keeps its own in the roaming part of AppData).
-    (Edge isn't yet: its Startup boost keeps it running with no window open.)"""
+    (Opera keeps its own in the roaming part of AppData)."""
     if WINDOWS:
         base = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
         roaming = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
         return [("Chrome", base / "Google" / "Chrome" / "User Data"),
+                ("Edge", base / "Microsoft" / "Edge" / "User Data"),
                 ("Chrome", base / "Google" / "Chrome Beta" / "User Data"),
                 ("Chrome", base / "Google" / "Chrome SxS" / "User Data"),
                 ("Chromium", base / "Chromium" / "User Data"),
@@ -1963,6 +1980,7 @@ def chromium_roots():
     if MACOS:
         base = HOME / "Library" / "Application Support"
         return [("Chrome", base / "Google" / "Chrome"), ("Chrome", base / "Google" / "Chrome Beta"),
+                ("Edge", base / "Microsoft Edge"),
                 ("Chromium", base / "Chromium"), ("Brave", base / "BraveSoftware" / "Brave-Browser"),
                 ("Vivaldi", base / "Vivaldi"), ("Opera", base / "com.operasoftware.Opera"),
                 ("Opera GX", base / "com.operasoftware.OperaGX")]
@@ -1972,6 +1990,7 @@ def chromium_roots():
             ("Chrome", config / "google-chrome-unstable"), ("Chromium", config / "chromium"),
             ("Brave", config / "BraveSoftware" / "Brave-Browser"), ("Vivaldi", config / "vivaldi"),
             ("Opera", config / "opera"), ("Opera", flatpak / "com.opera.Opera" / "config" / "opera"),
+            ("Edge", config / "microsoft-edge"), ("Edge", flatpak / "com.microsoft.Edge" / "config" / "microsoft-edge"),
             ("Chrome", flatpak / "com.google.Chrome" / "config" / "google-chrome"),
             ("Chromium", flatpak / "org.chromium.Chromium" / "config" / "chromium"),
             ("Brave", flatpak / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser"),
@@ -1997,6 +2016,90 @@ def chromium_profiles():
     return found
 
 
+def windows_processes():
+    """Windows: {pid: (exe name, parent pid)} of every running process."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD), ("th32ProcessID", w.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", w.DWORD),
+                    ("cntThreads", w.DWORD), ("th32ParentProcessID", w.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", w.DWORD), ("szExeFile", w.WCHAR * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = w.HANDLE
+    kernel32.CloseHandle.argtypes = (w.HANDLE,)
+    snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    found = {}
+    entry = PROCESSENTRY32W(ctypes.sizeof(PROCESSENTRY32W))
+    ok = kernel32.Process32FirstW(w.HANDLE(snap), ctypes.byref(entry))
+    while ok:
+        found[entry.th32ProcessID] = (entry.szExeFile.lower(), entry.th32ParentProcessID)
+        ok = kernel32.Process32NextW(w.HANDLE(snap), ctypes.byref(entry))
+    kernel32.CloseHandle(w.HANDLE(snap))
+    return found
+
+
+def visible_window_pids():
+    """Windows: the processes with a visible window on this desktop, or None if
+    this program can't see the desktop (then it can't tell)."""
+    import ctypes
+    from ctypes import wintypes as w
+    user32 = ctypes.WinDLL("user32")
+    user32.GetShellWindow.restype = w.HWND
+    if not user32.GetShellWindow():
+        return None
+    pids = set()
+
+    @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    def each(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            pid = w.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pids.add(pid.value)
+        return True
+
+    user32.EnumWindows(each, 0)
+    return pids
+
+
+def end_edge_in_background():
+    """Windows: Edge's Startup boost keeps it running with no window, so it's never
+    closed long enough to be set up. If that's all that runs of it, end it (it
+    starts again with Edge, or at the next sign-in) and return True."""
+    import ctypes
+    procs = windows_processes()
+    edge = {pid for pid, (name, _) in procs.items() if name == "msedge.exe"}
+    if not edge:
+        return False
+    shown = visible_window_pids()
+    if shown is None or edge & shown:
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    for pid in edge:
+        if procs[pid][1] in edge:
+            continue  # a helper: goes with the main one
+        handle = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+        if handle:
+            kernel32.TerminateProcess(ctypes.c_void_p(handle), 0)
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    log("ended Edge's window-less Startup boost process to change its settings")
+    return True
+
+
+def mark_clean_exit(prefs):
+    """After ending Edge that way: its profile says it quit normally, so it doesn't
+    offer to restore pages it never showed."""
+    data = json.loads(prefs.read_text(encoding="utf-8"))
+    profile = data.setdefault("profile", {})
+    if isinstance(profile, dict) and profile.get("exit_type") != "Normal":
+        profile["exit_type"] = "Normal"
+        profile["exited_cleanly"] = True
+        write_json(prefs, data)
+
+
 def chromium_running(root):
     """Is the browser using this user data folder running? (It writes Preferences
     from memory, so changes made meanwhile would be lost.)"""
@@ -2014,7 +2117,8 @@ def chromium_running(root):
 
 
 CHROMIUM_PREFS = ("download.default_directory", "download.directory_upgrade",
-                  "download.prompt_for_download", "savefile.default_directory")
+                  "download.prompt_for_download", "download.extensions_to_open",
+                  "savefile.default_directory")
 
 
 def same_path(value):
@@ -2055,11 +2159,64 @@ def setup_chromium_profile(prefs):
         section, name = key.split(".")
         if name in sections[section]:
             before[key] = sections[section][name]
-    download.update(default_directory=str(QUARANTINE), directory_upgrade=True, prompt_for_download=False)
+    # No type opens by itself ("Always open files of this type"): it would open
+    # before it's checked.
+    download.update(default_directory=str(QUARANTINE), directory_upgrade=True, prompt_for_download=False,
+                    extensions_to_open="")
     savefile["default_directory"] = str(QUARANTINE)
     data["download"], data["savefile"] = download, savefile
     write_json(prefs, data)
     return before
+
+
+def wait_closed(root, seconds=10):
+    """Wait for a browser that was just ended to let go of its lock."""
+    for _ in range(int(seconds / 0.2)):
+        if not chromium_running(root):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def chromium_wants_auto_open(prefs):
+    try:
+        download = json.loads(prefs.read_text(encoding="utf-8")).get("download")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(download, dict) and bool(download.get("extensions_to_open"))
+
+
+def chromium_auto_open_off(prefs):
+    """Empty a closed Chromium-based browser's list of file types it opens by itself
+    once downloaded. True if there was one."""
+    data = json.loads(prefs.read_text(encoding="utf-8"))
+    download = data.get("download") if isinstance(data, dict) else None
+    if not isinstance(download, dict) or not download.get("extensions_to_open"):
+        return False
+    download["extensions_to_open"] = ""
+    write_json(prefs, data)
+    return True
+
+
+def firefox_auto_open_off(folder):
+    """Firefox-based: file types set to open in an app without asking ("Always open
+    similar files") are saved instead, since they'd open before they're checked.
+    Returns {type: its handler before} for those changed. Only while it's closed."""
+    handlers = folder / "handlers.json"
+    try:
+        data = json.loads(handlers.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    changed = {}
+    types = data.get("mimeTypes") if isinstance(data, dict) else None
+    for mime, handler in (types.items() if isinstance(types, dict) else ()):
+        # 2: a chosen app, 4: the system's default app; 3 (in the browser) is left.
+        if isinstance(handler, dict) and handler.get("action") in (2, 4) and not handler.get("ask"):
+            changed[mime] = dict(handler)
+            handler["action"] = 0  # save
+    if changed:
+        write_json(handlers, data)
+    return changed
 
 
 def undo_chromium_profile(prefs, before):
@@ -2203,7 +2360,9 @@ def names(items):
 def browser_pass(record):
     """Send downloads of every browser profile not seen before to quarantine. A
     profile is set up once: if its folder is changed by hand later, that stays.
-    Returns (browsers set up now, browsers waiting to be closed, browsers covered)."""
+    Downloads opening by themselves are turned off again whenever a set-up browser
+    is closed. Returns (browsers set up now, browsers waiting to be closed, browsers
+    covered)."""
     done_ff = {entry["profile"] for entry in record.setdefault("firefox", [])}
     done_cr = {entry["prefs"] for entry in record.setdefault("chromium", [])}
     set_up, waiting, covered = [], [], []
@@ -2221,13 +2380,43 @@ def browser_pass(record):
             log(f"set up {browser} profile {folder}")
             # Taken from user.js at its next start.
             (waiting if profile_in_use(folder) else set_up).append(browser)
+    for entry in record["firefox"]:
+        folder = Path(entry["profile"])
+        if folder.is_dir() and not profile_in_use(folder):
+            try:
+                for mime, handler in firefox_auto_open_off(folder).items():
+                    entry.setdefault("handlers_before", {}).setdefault(mime, handler)
+                    log(f"{folder.name}: {mime} downloads no longer open by themselves")
+            except (OSError, ValueError) as e:
+                log(f"could not read the file handlers of {folder}: {e}")
+    for entry in record["chromium"]:
+        prefs, root = Path(entry["prefs"]), Path(entry["prefs"]).parent.parent
+        if not prefs.is_file():
+            continue
+        try:
+            if chromium_running(root):
+                # Edge never closes for good (Startup boost): end it while it has no
+                # window, but only once it has saved a list of types to open.
+                if not (WINDOWS and entry.get("browser") == "Edge" and chromium_wants_auto_open(prefs)
+                        and end_edge_in_background() and wait_closed(root)):
+                    continue
+                mark_clean_exit(prefs)
+            if chromium_auto_open_off(prefs):
+                log(f"{prefs.parent}: downloads no longer open by themselves")
+        except (OSError, ValueError) as e:
+            log(f"could not read {prefs}: {e}")
     for browser, root, prefs in chromium_profiles():
         covered.append(browser)
         if str(prefs) in done_cr or chromium_points_here(prefs):
             continue
+        ended = chromium_running(root) and WINDOWS and browser == "Edge" and \
+            end_edge_in_background() and wait_closed(root)
         if chromium_running(root):
             waiting.append(browser)
             continue
+        if ended:
+            with contextlib.suppress(OSError, ValueError):
+                mark_clean_exit(prefs)
         try:
             before = setup_chromium_profile(prefs)
         except (OSError, ValueError) as e:
@@ -2342,8 +2531,9 @@ def watch_browsers():
                 record = json.loads(BROWSER_SETUP.read_text())
             except (OSError, ValueError):
                 record = {}
-            set_up, still, _ = browser_pass(record)
-            if set_up:
+            before = json.dumps(record, sort_keys=True)
+            _, still, _ = browser_pass(record)
+            if json.dumps(record, sort_keys=True) != before:
                 save_browser_record(record)
             waiting = bool(still)
         except Exception as e:
@@ -2362,6 +2552,7 @@ def undo_browser_setup():
         folder = Path(entry["profile"])
         if folder.is_dir():
             undo_firefox_profile(folder, entry.get("before", {}))
+            undo_firefox_handlers(folder, entry.get("handlers_before", {}))
             print(f"Put back the download settings of {folder}")
     for entry in record.get("chromium", []):
         prefs = Path(entry["prefs"])

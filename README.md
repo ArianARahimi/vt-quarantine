@@ -90,16 +90,22 @@ double-click **`install.command`**. The first time, right-click it and choose
 Your browsers need to save downloads into the quarantine folder. vt-quarantine
 sets up **every browser it finds**, in every profile, by itself:
 
-- **Chrome, Brave, Opera, Opera GX, Chromium and Vivaldi** while they're closed. One that's open
-  is set up the moment you close it, so restart it once. "Ask where to save each
-  file" is turned off, since a save box lets a download land anywhere.
+- **Chrome, Edge, Brave, Opera, Opera GX, Chromium and Vivaldi** while they're
+  closed. One that's open is set up the moment you close it, so restart it once.
+  "Ask where to save each file" is turned off, since a save box lets a download
+  land anywhere. Edge never quite closes on Windows (Startup boost keeps it
+  running without a window), so vt-quarantine ends that window-less process to
+  change the setting; it starts again with Edge.
 - **Firefox, Waterfox, LibreWolf and Floorp** take the setting at their next
   start.
 - A browser you install or start for the first time later is set up quietly.
+- **Files opening by themselves once downloaded** ("Always open files of this
+  type", "Always open similar files") is turned off, since they'd open before
+  they're checked, and turned off again if it's switched on later.
 
 Each profile is set up once: if you change its download folder afterwards, that
 stays. One notification says what was set up. Only a **default browser that
-can't be set up from outside** (Edge for now, Safari) gets a
+can't be set up from outside** (Safari) gets a
 notification with the folder and a **Copy folder** button instead; paste it into
 the browser's download setting (see below). Uninstalling puts every browser's
 settings back as they were.
@@ -238,10 +244,9 @@ this version": you're asked again only when the next one comes out.
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Only the quarantine folder is covered.** Other browsers, profiles and tools,
   and Save As dialogs pointed at another folder, skip it.
-- **"Always open similar files" opens a download before it's checked.** A
-  browser that opens files of a type automatically does so the moment the
-  download finishes, before vt-quarantine can lock it. Turn that off in the
-  browser's download settings.
+- **"Always open similar files" in a browser vt-quarantine doesn't set up** (Safari,
+  or one it doesn't know) opens a download the moment it finishes, before it can
+  be locked. Turn that off in the browser's download settings.
 - **Programs already running as you are out of scope.** They can write to the
   quarantine folder or change vt-quarantine itself.
 - **The free API allows 4 lookups a minute and 500 a day.** vt-quarantine paces
@@ -260,7 +265,8 @@ this version": you're asked again only when the next one comes out.
 Tested on a real Windows 11 (in a virtual machine): installing, the API key
 window, notifications and their buttons, checking downloads (with Windows'
 own certificate check), locking files, the quarantine folder (hidden, and made
-again if deleted), browser setup for Chrome, Brave and Opera GX, waiting while
+again if deleted), browser setup for Chrome, Edge, Brave and Opera GX (with
+"Always open files of this type" turned off again), waiting while
 something is fullscreen, the clipboard, upgrading by hand (the key is kept)
 and uninstalling.
 
@@ -269,16 +275,13 @@ and uninstalling.
   release to update to.
 - **The installer is unsigned.** Edge holds the download ("isn't commonly
   downloaded": **⋯ → Keep → Keep anyway**) until it's code-signed and known.
-- **Edge isn't set up by itself yet.** Its Startup boost keeps it running in the
-  background with every window closed, so there's no moment to change its
-  setting safely. As the default browser it gets the Copy folder notification.
 - **Firefox, Waterfox, LibreWolf, Floorp, Chromium, Vivaldi and Opera** are set
   up the same way as the tested browsers, but only unit tests have run them.
 - **Opera GX asks where to save programs** (.exe, .msi) even with "Ask where to
   save" off, and Opera probably does too. The box opens in the quarantine
   folder, so Save keeps the file in quarantine; other downloads go there
   without asking.
-- **Uninstalling while a Chromium-based browser (Chrome, Brave, Opera) is open
+- **Uninstalling while a Chromium-based browser (Chrome, Edge, Brave, Opera) is open
   leaves its downloads going to the quarantine folder**, since it would write
   the old setting back over the change. The folder is then left in sight in
   your Downloads folder; set the browser's download folder back in its
