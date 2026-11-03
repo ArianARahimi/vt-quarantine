@@ -1938,26 +1938,32 @@ def undo_firefox_profile(folder, before):
 # Keywords in what the system names its default browser (a .desktop file on Linux, a
 # ProgId on Windows, a bundle id on macOS), most specific first.
 def chromium_roots():
-    """(browser, user data folder) for the Chromium-based browsers set up from outside.
+    """(browser, user data folder) for the Chromium-based browsers set up from outside
+    (Opera keeps its own in the roaming part of AppData).
     (Edge isn't yet: its Startup boost keeps it running with no window open.)"""
     if WINDOWS:
         base = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
+        roaming = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
         return [("Chrome", base / "Google" / "Chrome" / "User Data"),
                 ("Chrome", base / "Google" / "Chrome Beta" / "User Data"),
                 ("Chrome", base / "Google" / "Chrome SxS" / "User Data"),
                 ("Chromium", base / "Chromium" / "User Data"),
                 ("Brave", base / "BraveSoftware" / "Brave-Browser" / "User Data"),
-                ("Vivaldi", base / "Vivaldi" / "User Data")]
+                ("Vivaldi", base / "Vivaldi" / "User Data"),
+                ("Opera", roaming / "Opera Software" / "Opera Stable"),
+                ("Opera GX", roaming / "Opera Software" / "Opera GX Stable")]
     if MACOS:
         base = HOME / "Library" / "Application Support"
         return [("Chrome", base / "Google" / "Chrome"), ("Chrome", base / "Google" / "Chrome Beta"),
                 ("Chromium", base / "Chromium"), ("Brave", base / "BraveSoftware" / "Brave-Browser"),
-                ("Vivaldi", base / "Vivaldi")]
+                ("Vivaldi", base / "Vivaldi"), ("Opera", base / "com.operasoftware.Opera"),
+                ("Opera GX", base / "com.operasoftware.OperaGX")]
     config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
     flatpak = HOME / ".var" / "app"
     return [("Chrome", config / "google-chrome"), ("Chrome", config / "google-chrome-beta"),
             ("Chrome", config / "google-chrome-unstable"), ("Chromium", config / "chromium"),
             ("Brave", config / "BraveSoftware" / "Brave-Browser"), ("Vivaldi", config / "vivaldi"),
+            ("Opera", config / "opera"), ("Opera", flatpak / "com.opera.Opera" / "config" / "opera"),
             ("Chrome", flatpak / "com.google.Chrome" / "config" / "google-chrome"),
             ("Chromium", flatpak / "org.chromium.Chromium" / "config" / "chromium"),
             ("Brave", flatpak / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser"),
@@ -1976,6 +1982,8 @@ def chromium_profiles():
             continue  # never started
         for name in names:
             prefs = root / name / "Preferences"
+            if not prefs.is_file() and name == "Default":
+                prefs = root / "Preferences"  # older Opera: the profile is the folder itself
             if prefs.is_file():
                 found.append((browser, root, prefs))
     return found
@@ -2067,7 +2075,8 @@ def undo_chromium_profile(prefs, before):
 
 BROWSER_NAMES = (("waterfox", "Waterfox"), ("librewolf", "LibreWolf"), ("floorp", "Floorp"),
                  ("firefox", "Firefox"), ("chromium", "Chromium"), ("chrome", "Chrome"),
-                 ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("opera", "Opera"),
+                 ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("operagx", "Opera GX"),
+                 ("opera", "Opera"),
                  ("safari", "Safari"))
 FIREFOX_BASED = ("Firefox", "Waterfox", "LibreWolf", "Floorp")
 
@@ -2100,7 +2109,7 @@ def default_browser_id():
 def default_browser():
     """The default browser's name, or None if it isn't one this knows."""
     try:
-        ident = default_browser_id().lower()
+        ident = default_browser_id().lower().replace(" ", "")  # "Opera GXStable"
     except Exception as e:
         log(f"could not find the default browser: {e}")
         return None

@@ -89,7 +89,7 @@ double-click **`install.command`**. The first time, right-click it and choose
 Your browsers need to save downloads into the quarantine folder. vt-quarantine
 sets up **every browser it finds**, in every profile, by itself:
 
-- **Chrome, Brave, Chromium and Vivaldi** while they're closed. One that's open
+- **Chrome, Brave, Opera, Opera GX, Chromium and Vivaldi** while they're closed. One that's open
   is set up the moment you close it, so restart it once. "Ask where to save each
   file" is turned off, since a save box lets a download land anywhere.
 - **Firefox, Waterfox, LibreWolf and Floorp** take the setting at their next
@@ -98,7 +98,7 @@ sets up **every browser it finds**, in every profile, by itself:
 
 Each profile is set up once: if you change its download folder afterwards, that
 stays. One notification says what was set up. Only a **default browser that
-can't be set up from outside** (Edge for now, Safari, Opera) gets a
+can't be set up from outside** (Edge for now, Safari) gets a
 notification with the folder and a **Copy folder** button instead; paste it into
 the browser's download setting (see below). Uninstalling puts every browser's
 settings back as they were.
@@ -277,10 +277,14 @@ unverified:
   (Windows 11: set up while closed, and right after closing when open; then a
   real download went through quarantine). Firefox, Waterfox, LibreWolf, Floorp,
   Chromium and Vivaldi have unit tests only, and so does Copy folder (PowerShell).
+- **Opera GX asks where to save programs** (.exe, .msi) even with "Ask where to
+  save" off, and Opera probably does too. The box opens in the quarantine
+  folder, so Save keeps the file in quarantine; other downloads go there
+  without asking.
 - **Edge isn't set up by itself yet.** Its Startup boost keeps it running in the
   background with every window closed, so there's no moment to change its
   setting safely. As the default browser it gets the Copy folder notification.
-- **Uninstalling while Chrome, Brave, Chromium or Vivaldi is open leaves its
+- **Uninstalling while a Chromium-based browser (Chrome, Brave, Opera) is open leaves its
   downloads going to the quarantine folder.** It would write the old setting
   back over the change. Close it first, or set the folder back in its settings.
 - **Running a newer `.msi` by hand asks to close "Python".** That's
