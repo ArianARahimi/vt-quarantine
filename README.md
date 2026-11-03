@@ -313,10 +313,12 @@ and uninstalling.
 - **An update from your package manager takes effect at your next sign-in.**
   `systemctl --user restart vt-quarantine` switches straight away. Updates
   through the notification restart it themselves.
-- **Setting up Chrome, Brave, Chromium and Vivaldi on Linux has only been
-  tested in unit tests** (on Windows it has run for real). It knows the usual
-  folders, Flatpak and the Chromium Snap. The default browser is found through
-  `xdg-settings`.
+- **Browser setup on Linux has run for real with Brave (Flatpak) on KDE
+  Plasma**: set up while closed (also after it was killed), a real download
+  went through quarantine, and uninstalling put it back. Chrome, Chromium,
+  Vivaldi, Opera and Edge use the same code with their own folders (including
+  Flatpak and the Chromium Snap), tested in unit tests only. The default browser
+  is found through `xdg-settings`.
 - **Remove the package only after `vt-quarantine --uninstall`.** Otherwise it
   keeps running until you sign out, and systemd warns about a leftover link.
 </details>

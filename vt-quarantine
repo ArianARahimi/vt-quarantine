@@ -2107,6 +2107,14 @@ def mark_clean_exit(prefs):
         write_json(prefs, data)
 
 
+def flatpak_app(folder):
+    """The Flatpak app a folder under ~/.var/app belongs to, if it does."""
+    try:
+        return Path(folder).relative_to(HOME / ".var" / "app").parts[0]
+    except (ValueError, IndexError):
+        return None
+
+
 def chromium_running(root):
     """Is the browser using this user data folder running? (It writes Preferences
     from memory, so changes made meanwhile would be lost.)"""
@@ -2118,9 +2126,32 @@ def chromium_running(root):
             return False
         except PermissionError:
             return True
-    # A symlink to "host-pid", removed when it quits. One left by a crash just
-    # means waiting for the next clean exit.
-    return os.path.lexists(root / "SingletonLock")
+    # A symlink to "<host>-<pid>", removed when it quits. One left behind by a crash
+    # names a process that's gone (checked the way the browser itself does).
+    try:
+        target = os.readlink(root / "SingletonLock")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    app = flatpak_app(root)
+    if app:  # its pid is the sandbox's own: ask Flatpak
+        try:
+            out = subprocess.run(["flatpak", "ps", "--columns=application"], capture_output=True,
+                                 text=True, timeout=20, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            return True
+        return app in out.split()
+    host, _, pid = target.rpartition("-")
+    if host != platform.node() or not pid.isdigit():
+        return True  # another computer sharing the folder: can't tell
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass  # exists, someone else's
+    return True
 
 
 CHROMIUM_PREFS = ("download.default_directory", "download.directory_upgrade",
