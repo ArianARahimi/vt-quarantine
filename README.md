@@ -206,7 +206,9 @@ even someone who took over the GitHub account couldn't push code to you.
 After an update, a short note says so. When a Linux package update is offered,
 **What's new** opens the release notes, and closing the question means "not
 this version": you're asked again only when the next one comes out.
-`vt-quarantine --auto-update off` stops update checks completely.
+`vt-quarantine --auto-update quiet` keeps updating without the notification
+afterwards (a Linux package still asks first, since installing it needs your
+password); `vt-quarantine --auto-update off` stops update checks completely.
 
 ## Privacy and security
 
@@ -330,7 +332,8 @@ vt-quarantine --uninstall         stop, undo the browser setup, forget everythin
 vt-quarantine --set-key           save or replace the API key
 vt-quarantine --check             fetch missing packages and check notifications
 vt-quarantine --test-notification show a test notification with buttons
-vt-quarantine --auto-update off   stop checking for updates (on: start again)
+vt-quarantine --auto-update off   stop checking for updates (on: start again;
+                                  quiet: update without a notification)
 vt-quarantine --forget-safe       forget the files you marked safe
 vt-quarantine --version
 ```
