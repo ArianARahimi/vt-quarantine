@@ -263,18 +263,24 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def msi_table(msi, name):
+    out = subprocess.run([os.environ.get("MSIINFO", "msiinfo"), "export", str(msi), name],
+                         capture_output=True, text=True, check=True).stdout
+    return [line.split("\t") for line in out.splitlines()[3:]]  # after the 3 header lines
+
+
 def check_sequence(msi):
-    """Every deferred action must run between InstallInitialize and InstallFinalize,
-    or real Windows fails the install or uninstall (Wine doesn't mind)."""
-    table = subprocess.run([os.environ.get("MSIINFO", "msiinfo"), "export", str(msi), "InstallExecuteSequence"],
-                           capture_output=True, text=True, check=True).stdout
-    seq = {}
-    for line in table.splitlines()[3:]:
-        action, _condition, number = line.split("\t")
-        seq[action] = int(number)
-    for action in ("Purge", "StopForUpgrade"):
-        if not seq["InstallInitialize"] < seq[action] < seq["RemoveFiles"]:
-            sys.exit(f"{action} is at {seq[action]}, outside InstallInitialize..RemoveFiles")
+    """Real Windows refuses a deferred custom action outside InstallInitialize..
+    InstallFinalize (error 2762, and the whole install or uninstall fails); Wine
+    doesn't mind, and wixl has put actions there before. Stop the build instead."""
+    seq = {row[0]: int(row[2]) for row in msi_table(msi, "InstallExecuteSequence")}
+    first, last = seq["InstallInitialize"], seq["InstallFinalize"]
+    for action, kind, *_ in msi_table(msi, "CustomAction"):
+        if int(kind) & 0x400 and action in seq and not first < seq[action] < last:  # InScript (deferred)
+            sys.exit(f"{msi}: deferred action {action} is at {seq[action]}, outside {first}..{last}")
+    for action in ("Purge", "StopForUpgrade"):  # these run the installed script: before it's removed
+        if not first < seq[action] < seq["RemoveFiles"]:
+            sys.exit(f"{msi}: {action} is at {seq[action]}, not before RemoveFiles")
 
 
 def main():
