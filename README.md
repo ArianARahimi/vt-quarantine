@@ -83,7 +83,8 @@ extract it, and run `sh install.sh`.
 
 Download this repository (**Code → Download ZIP**), extract it, and
 double-click **`install.command`**. The first time, right-click it and choose
-**Open**.
+**Open**. A dialog asks for your API key (**Get a key** opens the page to copy it
+from).
 
 ### Browser setup
 

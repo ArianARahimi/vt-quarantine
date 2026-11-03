@@ -226,7 +226,7 @@ QUARANTINE = RELEASE_DIR / ".quarantine"
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
-KEY_ASKED = CONFIG_DIR / "api_key.asked"  # Windows: the key window opened by itself once
+KEY_ASKED = CONFIG_DIR / "api_key.asked"  # Windows, macOS: the key window opened by itself once
 LIB_ROOT = DATA_DIR / "lib"
 BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the .msi
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
@@ -2890,9 +2890,9 @@ GUIDE_URL = "https://github.com/ArianARahimi/vt-quarantine#install"
 
 
 def key_window():
-    """Windows: run the key window (without a console) and wait for it; True if a
-    key was saved, which is then picked up straight away."""
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    """Windows and macOS: run the key window (on Windows without a console) and
+    wait for it; True if a key was saved, which is then picked up straight away."""
+    pythonw = Path(sys.executable).with_name("pythonw.exe") if WINDOWS else Path(sys.executable)
     return subprocess.run([str(pythonw if pythonw.exists() else sys.executable),
                            str(Path(__file__).resolve()), "--key-window"]).returncode == 0
 
@@ -2909,6 +2909,41 @@ def set_key():
     if not key:
         sys.exit("That doesn't look like a VirusTotal API key (64 hex characters).")
     print(f"Saved in {save_key(key)}.")
+
+
+MAC_KEY_DIALOG = """on run argv
+    set r to display dialog (item 2 of argv) with title (item 3 of argv) default answer "" with hidden answer buttons {"Get a key", "Cancel", "Save"} default button "Save" cancel button "Cancel" with icon caution
+    return (button returned of r) & linefeed & (text returned of r)
+end run"""
+
+
+def mac_key_dialog():
+    """macOS: ask for the API key in a dialog (osascript, built in), the answer
+    hidden like a password. True if a key was saved."""
+    text = ("VirusTotal Quarantine needs your free VirusTotal API key to check your downloads.\n\n"
+            "1. Sign in to VirusTotal, or create a free account.\n"
+            "2. Open your API key page and copy the key (Get a key opens it).\n"
+            "3. Paste it here:")
+    while True:
+        r = subprocess.run(["osascript", "-e", MAC_KEY_DIALOG, "vtq", text, f"{APP}: API key"],
+                           capture_output=True, text=True)
+        if r.returncode:  # Cancel, or closed
+            return False
+        button, _, answer = r.stdout.rstrip("\n").partition("\n")
+        if button == "Get a key":
+            open_url(KEY_PAGE_URL)
+            continue
+        key = parse_key(answer)
+        if not key:
+            text = ("That isn't an API key. It's 64 letters and numbers: use the Copy button "
+                    "on your API key page.\n\nPaste it here:")
+            continue
+        try:
+            save_key(key)
+        except Exception as e:
+            text = f"Could not save it: {e}\n\nPaste it here to try again:"
+            continue
+        return True
 
 
 def key_dialog():
@@ -3269,7 +3304,10 @@ def install():
         sys.exit(f"Notifications don't work here ({e}), and vt-quarantine needs them to ask you things.")
     try:
         if not read_key():
-            set_key()
+            if MACOS:
+                mac_key_dialog()  # Cancel: it asks again when it starts
+            else:
+                set_key()
     except KeyStoreLocked:
         print("Your API key is in your password store, which stayed locked; vt-quarantine\n"
               "will ask to unlock it when it starts.")
@@ -3418,7 +3456,7 @@ def run():
         if not warned:
             log(f"no API key at {KEY_FILE}")
             wait_for_free_screen("the API key warning")
-            if WINDOWS:
+            if WINDOWS or MACOS:
                 warned = True
                 # Right after installing: the key window itself, once. After that (or if it's
                 # closed without a key) a notification that opens it.
@@ -3504,7 +3542,7 @@ def main():
     if args.set_key:
         return set_key()
     if args.key_window:
-        return 0 if WINDOWS and key_dialog() else 1
+        return 0 if (key_dialog() if WINDOWS else MACOS and mac_key_dialog()) else 1
     if args.check:
         return check()
     if args.test_notification:
