@@ -318,8 +318,9 @@ and uninstalling.
 
 Tested on macOS 26 on an Intel Mac (in a virtual machine): the app (Open Anyway,
 the API key dialog, starting at sign-in, opening it again, uninstalling from it),
-the Terminal line and `install.command`, the Keychain, Safari set up by itself
-and put back on uninstall, file locking, and downloads: clean ones moved to
+the Terminal line and `install.command`, the Keychain, Safari, Chrome and
+Firefox set up by themselves (Safari put back on uninstall), file locking, and
+downloads in all three: clean ones moved to
 Downloads, flagged ones shown with Show report, Delete and Mark as safe, unknown
 ones with Upload.
 
@@ -327,8 +328,8 @@ ones with Upload.
   Python built for them, which should run, but no one has tried it yet.
 - **Automatic updates are untested on a Mac.** They need a newer release to
   update to.
-- **Chrome, Firefox and the other browsers are untested on a Mac**; the same
-  code is tested on Windows and Linux.
+- **Brave, Edge, Opera, Vivaldi, Chromium and LibreWolf are untested on a Mac**;
+  they use the same code as Chrome and Firefox.
 - **The app is unsigned**, so it needs Open Anyway the first time. A signed app
   needs an Apple Developer membership.
 - **Installed without the app, macOS lists it as "python3"** under Login Items
