@@ -27,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DIST = ROOT / "dist"
 BUILD = DIST / "build" / "macos"
+CACHE = Path(os.environ.get("VTQ_MACOS_CACHE") or BUILD)  # where the Python downloads are kept
 
 APP_NAME = "VirusTotal Quarantine"
 BUNDLE_ID = "io.github.arianarahimi.vt-quarantine"
@@ -82,7 +83,8 @@ def python_tree(arch):
     """This arch's Python, unpacked without symlinks or unused parts."""
     target, sha = PY_BUILDS[arch]
     name = f"cpython-{PY_VERSION}+{PBS_TAG}-{target}-install_only.tar.gz"
-    cached = BUILD / name
+    cached = CACHE / name
+    CACHE.mkdir(parents=True, exist_ok=True)
     BUILD.mkdir(parents=True, exist_ok=True)
     if not cached.exists() or hashlib.sha256(cached.read_bytes()).hexdigest() != sha:
         url = f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_TAG}/{name}"

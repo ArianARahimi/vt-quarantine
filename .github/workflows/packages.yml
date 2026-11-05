@@ -60,6 +60,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  macos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Downloads python-build-standalone for both Mac kinds, checked against pinned SHA-256s.
+      - name: Build the app
+        run: |
+          python3 macos/build.py
+          unzip -l dist/*-macos.zip | grep -E "Contents/(Info.plist|MacOS/vt-quarantine|Resources/vt-quarantine.py)$"
+          unzip -l dist/*-macos.zip | grep -E "Resources/python-(arm64|x86_64)/bin/python3$" | wc -l | grep -qx 2
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: macos
+          path: dist/*-macos.zip
+          if-no-files-found: error
+
   linux:
     runs-on: ubuntu-24.04
     container: ${{ matrix.image }}
@@ -173,7 +194,7 @@ jobs:
 
   release:
     if: github.ref_type == 'tag'
-    needs: [windows, linux-test]
+    needs: [windows, macos, linux-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -216,7 +237,9 @@ jobs:
           - Fedora: \`sudo dnf install ./vt-quarantine-$v-1.noarch.rpm\`
           - Arch: \`sudo pacman -U vt-quarantine-$v-1-any.pkg.tar.zst\`
 
-          **macOS and other Linux distributions:** see the [README](https://github.com/$GITHUB_REPOSITORY#install).
+          **macOS:** download \`vt-quarantine-$v-macos.zip\`, open it and open **VirusTotal Quarantine**. It brings its own Python. The first time, macOS blocks it: click Done, then System Settings → Privacy & Security → **Open Anyway**.
+
+          **Other Linux distributions:** see the [README](https://github.com/$GITHUB_REPOSITORY#install).
 
           SHA-256 checksums are in \`SHA256SUMS\`, signed in \`SHA256SUMS.sig\` (Ed25519; installed copies check it before updating).
           EOF

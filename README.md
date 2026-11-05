@@ -81,20 +81,21 @@ extract it, and run `sh install.sh`.
 
 ### macOS
 
-Open **Terminal** and paste this line:
+Download **`vt-quarantine-<version>-macos.zip`** from the
+[latest release](https://github.com/ArianARahimi/vt-quarantine/releases/latest),
+open it, and open **VirusTotal Quarantine**. It brings its own Python, so nothing
+else is needed. macOS blocks it the first time ("Apple could not verify…"): click
+**Done**, then **System Settings → Privacy & Security → Open Anyway** (near the
+bottom) and enter your password. A dialog asks for your API key (**Get a key**
+opens the page to copy it from). Afterwards you can keep the app (opening it again
+offers to uninstall) or move it to the Trash.
+
+Or, without the app, paste this line into **Terminal** (it uses the Python from
+Apple's command line developer tools, which macOS offers to install):
 
 ```
 curl -fsSLo /tmp/vt-quarantine https://raw.githubusercontent.com/ArianARahimi/vt-quarantine/stable/vt-quarantine && python3 /tmp/vt-quarantine --install
 ```
-
-A dialog asks for your API key (**Get a key** opens the page to copy it from).
-If macOS says Python needs the **command line developer tools**, click
-**Install** (a few minutes), then paste the line again.
-
-Or download this repository (**Code → Download ZIP**) and double-click
-**`install.command`**. macOS blocks it the first time ("Apple could not verify…"):
-click **Done**, then **System Settings → Privacy & Security → Open Anyway** (near
-the bottom) and enter your password.
 
 ### Browser setup
 
@@ -315,21 +316,23 @@ and uninstalling.
 <details>
 <summary><b>macOS</b>: tested on macOS 26 Tahoe; a few parts only in unit tests</summary>
 
-Tested on macOS 26 (in a virtual machine): installing with the Terminal line and
-with `install.command` (through Open Anyway), the API key dialog (with Get a key
-and a wrong key), the Keychain (a reinstall kept the key), the launch agent,
-Safari set up by itself (and put back on uninstall), a clean download moved to
-Downloads, a flagged one shown with its buttons and deleted, and uninstalling.
+Tested on macOS 26 on an Intel Mac (in a virtual machine): the app (Open Anyway,
+the API key dialog, starting at sign-in, opening it again, uninstalling from it),
+the Terminal line and `install.command`, the Keychain, Safari set up by itself
+and put back on uninstall, file locking, and downloads: clean ones moved to
+Downloads, flagged ones shown with Show report, Delete and Mark as safe, unknown
+ones with Upload.
 
-- **Untested on a Mac:** Show report / Mark as safe / Upload on a Mac, file
-  locking, Chrome, Firefox and the other browsers, and automatic updates.
-- **macOS lists vt-quarantine as "python3"** under Login Items & Extensions
-  (and says so in its "Background Activity" note), since that's the program
-  that runs it.
-- **A fresh Mac has no Python.** The first `python3` asks to install the command
-  line developer tools (about 1 GB from Apple).
-- **The installer is unsigned**, so `install.command` needs Open Anyway the
-  first time; the Terminal line above avoids that.
+- **The app is untested on Apple silicon Macs** (M1 and later). It carries a
+  Python built for them, which should run, but no one has tried it yet.
+- **Automatic updates are untested on a Mac.** They need a newer release to
+  update to.
+- **Chrome, Firefox and the other browsers are untested on a Mac**; the same
+  code is tested on Windows and Linux.
+- **The app is unsigned**, so it needs Open Anyway the first time. A signed app
+  needs an Apple Developer membership.
+- **Installed without the app, macOS lists it as "python3"** under Login Items
+  & Extensions (the app's own copy is listed as vt-quarantine).
 </details>
 
 <details>
