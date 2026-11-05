@@ -81,10 +81,20 @@ extract it, and run `sh install.sh`.
 
 ### macOS
 
-Download this repository (**Code → Download ZIP**), extract it, and
-double-click **`install.command`**. The first time, right-click it and choose
-**Open**. A dialog asks for your API key (**Get a key** opens the page to copy it
-from).
+Open **Terminal** and paste this line:
+
+```
+curl -fsSLo /tmp/vt-quarantine https://raw.githubusercontent.com/ArianARahimi/vt-quarantine/stable/vt-quarantine && python3 /tmp/vt-quarantine --install
+```
+
+A dialog asks for your API key (**Get a key** opens the page to copy it from).
+If macOS says Python needs the **command line developer tools**, click
+**Install** (a few minutes), then paste the line again.
+
+Or download this repository (**Code → Download ZIP**) and double-click
+**`install.command`**. macOS blocks it the first time ("Apple could not verify…"):
+click **Done**, then **System Settings → Privacy & Security → Open Anyway** (near
+the bottom) and enter your password.
 
 ### Browser setup
 
@@ -99,6 +109,8 @@ sets up **every browser it finds**, in every profile, by itself:
   change the setting; it starts again with Edge.
 - **Firefox, Waterfox, LibreWolf and Floorp** take the setting at their next
   start.
+- **Safari** (macOS) while it's closed, like Chrome. "Open “safe” files after
+  downloading" is turned off too.
 - A browser you install or start for the first time later is set up quietly.
 - **Files opening by themselves once downloaded** ("Always open files of this
   type", "Always open similar files") is turned off, since they'd open before
@@ -106,7 +118,7 @@ sets up **every browser it finds**, in every profile, by itself:
 
 Each profile is set up once: if you change its download folder afterwards, that
 stays. One notification says what was set up. Only a **default browser that
-can't be set up from outside** (Safari) gets a
+can't be set up from outside** (one it doesn't know) gets a
 notification with the folder and a **Copy folder** button instead; paste it into
 the browser's download setting (see below). Uninstalling puts every browser's
 settings back as they were.
@@ -247,8 +259,8 @@ password); `vt-quarantine --auto-update off` stops update checks completely.
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Only the quarantine folder is covered.** Other browsers, profiles and tools,
   and Save As dialogs pointed at another folder, skip it.
-- **"Always open similar files" in a browser vt-quarantine doesn't set up** (Safari,
-  or one it doesn't know) opens a download the moment it finishes, before it can
+- **"Always open similar files" in a browser vt-quarantine doesn't set up** (one
+  it doesn't know) opens a download the moment it finishes, before it can
   be locked. Turn that off in the browser's download settings.
 - **Programs already running as you are out of scope.** They can write to the
   quarantine folder or change vt-quarantine itself.
@@ -301,12 +313,23 @@ and uninstalling.
 </details>
 
 <details>
-<summary><b>macOS</b>: not yet run on a Mac</summary>
+<summary><b>macOS</b>: tested on macOS 26 Tahoe; a few parts only in unit tests</summary>
 
-- **Nothing has run on a real Mac yet.** Unit tests cover the macOS code
-  (browser setup, the Keychain, the API key dialog, the launch agent, file
-  locking), but installing, notifications and their buttons, and Safari's
-  manual folder setting are untested.
+Tested on macOS 26 (in a virtual machine): installing with `install.command`
+(through Open Anyway), the API key dialog (with Get a key and a wrong key), the
+launch agent, and a Safari download checked and moved to Downloads. Safari's
+settings were changed the way vt-quarantine changes them, by hand.
+
+- **Untested on a Mac:** the automatic Safari setup as a whole (unit tests
+  only), notifications and their buttons, file locking, the Keychain, Chrome,
+  Firefox and the other browsers, automatic updates, and uninstalling.
+- **macOS lists vt-quarantine as "python3"** under Login Items & Extensions
+  (and says so in its "Background Activity" note), since that's the program
+  that runs it.
+- **A fresh Mac has no Python.** The first `python3` asks to install the command
+  line developer tools (about 1 GB from Apple).
+- **The installer is unsigned**, so `install.command` needs Open Anyway the
+  first time; the Terminal line above avoids that.
 </details>
 
 <details>

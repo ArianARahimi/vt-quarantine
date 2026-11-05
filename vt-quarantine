@@ -2280,6 +2280,48 @@ def undo_chromium_profile(prefs, before):
     write_json(prefs, data)
 
 
+# Safari (macOS) keeps its settings in a preferences domain that `defaults` can change
+# while it's closed: where downloads go, and whether "safe" files open by themselves.
+SAFARI = "com.apple.Safari"
+SAFARI_KEYS = ("DownloadsPath", "AutoOpenSafeDownloads")
+
+
+def safari_running():
+    return subprocess.run(["pgrep", "-x", "Safari"], capture_output=True).returncode == 0
+
+
+def safari_settings():
+    """The current values of SAFARI_KEYS (None for one that isn't set)."""
+    import plistlib
+    out = subprocess.run(["defaults", "export", SAFARI, "-"], capture_output=True, check=True).stdout
+    data = plistlib.loads(out) if out.strip() else {}
+    return {key: data.get(key) for key in SAFARI_KEYS}
+
+
+def safari_set(key, value):
+    """Set one Safari setting, or remove it (value None) so Safari's default applies."""
+    if value is None:
+        subprocess.run(["defaults", "delete", SAFARI, key], capture_output=True)
+        return
+    kind = "-bool" if isinstance(value, bool) else "-string"
+    subprocess.run(["defaults", "write", SAFARI, key, kind, str(value).lower() if kind == "-bool" else value],
+                   capture_output=True, check=True)
+
+
+def setup_safari():
+    """Downloads into quarantine and no opening by themselves. Returns what was there."""
+    before = safari_settings()
+    safari_set("DownloadsPath", str(QUARANTINE))
+    safari_set("AutoOpenSafeDownloads", False)
+    return before
+
+
+def undo_safari(before):
+    if safari_settings().get("DownloadsPath") == str(QUARANTINE):  # not if changed by hand since
+        safari_set("DownloadsPath", before.get("DownloadsPath"))
+    safari_set("AutoOpenSafeDownloads", before.get("AutoOpenSafeDownloads"))
+
+
 BROWSER_NAMES = (("waterfox", "Waterfox"), ("librewolf", "LibreWolf"), ("floorp", "Floorp"),
                  ("firefox", "Firefox"), ("chromium", "Chromium"), ("chrome", "Chrome"),
                  ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("operagx", "Opera GX"),
@@ -2412,7 +2454,27 @@ def browser_pass(record):
     firefox_auto_open_pass(record)
     chromium_auto_open_pass(record)
     setup_new_chromium(record, set_up, waiting, covered)
+    if MACOS:
+        safari_pass(record, set_up, waiting, covered)
     return set_up, waiting, covered
+
+
+def safari_pass(record, set_up, waiting, covered):
+    covered.append("Safari")
+    if safari_running():
+        if "safari" not in record:
+            waiting.append("Safari")
+        return
+    try:
+        if "safari" not in record:
+            record["safari"] = {"before": setup_safari()}
+            log("set up Safari")
+            set_up.append("Safari")
+        elif safari_settings().get("AutoOpenSafeDownloads") is not False:
+            safari_set("AutoOpenSafeDownloads", False)
+            log("Safari: safe downloads no longer open by themselves")
+    except (OSError, ValueError, subprocess.CalledProcessError) as e:
+        log(f"could not set up Safari: {e}")
 
 
 def edge_on_windows(browser):
@@ -2624,6 +2686,18 @@ def undo_browser_setup():
             undo_firefox_profile(folder, entry.get("before", {}))
             undo_firefox_handlers(folder, entry.get("handlers_before", {}))
             print(f"Put back the download settings of {folder}")
+    if MACOS and "safari" in record:
+        if safari_running():
+            print(f"Safari is open, so its downloads still go to {QUARANTINE}: change that in "
+                  "Safari → Settings → General → File download location")
+            left.append("Safari")
+        else:
+            try:
+                undo_safari(record["safari"].get("before", {}))
+                print("Put back Safari's download settings")
+            except (OSError, ValueError, subprocess.CalledProcessError) as e:
+                print(f"Could not put back Safari's download settings: {e}")
+                left.append("Safari")
     for entry in record.get("chromium", []):
         prefs = Path(entry["prefs"])
         if not prefs.is_file():
@@ -3390,8 +3464,8 @@ def install():
     print(f"""
 vt-quarantine is running and starts automatically when you sign in.
 
-It sets up Chrome, Edge, Brave, Opera, Chromium, Vivaldi, Firefox, Waterfox,
-LibreWolf and Floorp by itself: restart any that are open.
+It sets up {'Safari, ' if MACOS else ''}Chrome, Edge, Brave, Opera, Chromium, Vivaldi, Firefox,
+Waterfox, LibreWolf and Floorp by itself: restart any that are open.
 Any other browser: set its download folder to
     {QUARANTINE}
 
