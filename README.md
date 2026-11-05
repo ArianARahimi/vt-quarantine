@@ -301,13 +301,17 @@ and uninstalling.
 </details>
 
 <details>
-<summary><b>Linux packages</b>: only the Arch package has run on a real desktop</summary>
+<summary><b>Linux packages</b>: tested on KDE Plasma (Arch) and GNOME (Fedora, Ubuntu)</summary>
 
-- **The .deb and .rpm haven't run on a desktop with notifications yet.** GitHub
-  Actions installs and removes each package on Debian 13, Ubuntu 24.04 and
-  22.04, Fedora 45 and Arch, and checks that it finds the distribution's
-  jeepney. The Arch package has run on KDE Plasma, including an update through
-  the notification.
+- **Tested on real desktops:** the Arch package on KDE Plasma, including an
+  update through the notification; the .rpm on Fedora 44 and the .deb on
+  Ubuntu 26.04, both GNOME on Wayland (live sessions): installing, setting up
+  Firefox (on Ubuntu the Snap), clean and flagged downloads with every button,
+  uninstalling and removing the package. GitHub Actions also installs and
+  removes each package on Debian 13, Ubuntu 24.04 and 22.04, Fedora 45 and Arch.
+- **Not yet tested with the .deb and .rpm:** an update through the
+  notification, and keeping the API key in GNOME Keyring (a live session has
+  no keyring, so the key went to the plain file, as designed).
 - **Other RPM-based distributions are untested.** On openSUSE the dependency
   names may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
 - **An update from your package manager takes effect at your next sign-in.**
