@@ -235,6 +235,9 @@ BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the 
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
 INSTALLED_SCRIPT = DATA_DIR / "vt-quarantine.py"
 MAC_PYTHON = DATA_DIR / "python" / "bin" / "vt-quarantine"  # the macOS app's Python, under the name macOS lists
+APP_PLACE = CONFIG_DIR / "app-path"  # macOS: where the app is kept; putting it in the Trash uninstalls
+UNINSTALLER = HOME / "Applications" / "Uninstall VirusTotal Quarantine.app"
+APP_BUNDLE_ID = "io.github.arianarahimi.vt-quarantine"
 
 # The systemd journal timestamps lines itself; anywhere else they need their own.
 log_timestamps = "JOURNAL_STREAM" not in os.environ
@@ -3384,8 +3387,10 @@ def install_app():
     def tell(title, text, buttons=(("ok", "OK"),)):
         return dialogs.notify(title, text, "critical", "", list(buttons))
 
+    bundle = app_bundle()
     installed = installed_version()
     if LAUNCH_AGENT.exists() and installed and installed >= parse_version(VERSION):
+        remember_app_place(bundle)
         if tell(f"{APP} is running", f"Every download saved to {QUARANTINE} is checked on VirusTotal "
                 "before it reaches your Downloads folder.", [("ok", "OK"), ("remove", "Uninstall…")]) == "remove" \
                 and tell("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
@@ -3396,15 +3401,131 @@ def install_app():
             tell("vt-quarantine is removed", "You can move this app to the Trash.")
         return 0
     try:
-        copy_app_python(app_bundle())
+        copy_app_python(bundle)
         with contextlib.redirect_stdout(io.StringIO()):
             install()
     except (OSError, SystemExit) as e:
         tell(f"{APP} couldn't be installed", str(getattr(e, "code", None) or e))
         return 1
+    removal = ("To remove it, drag VirusTotal Quarantine to the Trash, or open Uninstall VirusTotal Quarantine."
+               if remember_app_place(bundle) else
+               "Move this app to your Applications folder: then dragging it to the Trash removes vt-quarantine. "
+               "Or open Uninstall VirusTotal Quarantine (in Applications) any time.")
     tell(f"{APP} is running", "It starts by itself when you sign in, and checks every download before it "
-         "reaches your Downloads folder. Keep this app to remove vt-quarantine later (open it again), "
-         "or move it to the Trash.")
+         f"reaches your Downloads folder.\n\n{removal}")
+    return 0
+
+
+def in_applications(bundle):
+    """Kept in an Applications folder (not run from Downloads, which macOS runs
+    from a temporary copy)."""
+    path = str(bundle)
+    return "/AppTranslocation/" not in path and \
+        (path.startswith("/Applications/") or path.startswith(str(HOME / "Applications") + "/"))
+
+
+def remember_app_place(bundle):
+    """Note where the app is kept, so putting it in the Trash uninstalls. Returns
+    whether it's somewhere that works."""
+    if bundle is None or not in_applications(bundle):
+        return False
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    APP_PLACE.write_text(str(bundle))
+    return True
+
+
+def app_copies():
+    """Where Spotlight knows the app to be (not in the Trash)."""
+    try:
+        out = subprocess.run(["mdfind", f"kMDItemCFBundleIdentifier == '{APP_BUNDLE_ID}'"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [Path(line) for line in out.splitlines() if line.endswith(".app") and "/.Trash/" not in line]
+
+
+def app_thrown_away(missing_before):
+    """One check of the kept app: True once it has been gone (and nowhere else)
+    for two checks in a row, which means it went in the Trash."""
+    try:
+        place = Path(APP_PLACE.read_text().strip())
+    except OSError:
+        return False
+    if place.exists():
+        return False
+    moved = [copy for copy in app_copies() if copy.exists() and in_applications(copy)]
+    if moved:
+        APP_PLACE.write_text(str(moved[0]))
+        log(f"the app moved to {moved[0]}")
+        return False
+    return missing_before
+
+
+def watch_app():
+    """macOS, background: the app put in the Trash removes vt-quarantine."""
+    missing = False
+    while True:
+        time.sleep(60 if not missing else 120)
+        try:
+            was_missing = missing
+            missing = not Path(APP_PLACE.read_text().strip()).exists() if APP_PLACE.exists() else False
+            if missing and app_thrown_away(was_missing):
+                log("the app is in the Trash: removing vt-quarantine")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    uninstall(stop=False)
+                subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"],
+                               capture_output=True)  # last: this ends the program
+                return
+        except Exception as e:
+            log(f"app check failed: {e}")
+
+
+UNINSTALLER_SCRIPT = """#!/bin/sh
+# Opens vt-quarantine's own uninstall question.
+exec {python} {script} --uninstall-app
+"""
+
+
+def make_uninstaller():
+    """macOS: "Uninstall VirusTotal Quarantine" in ~/Applications, a few lines of
+    script that run the installed copy's uninstall."""
+    import plistlib
+    import shlex
+    python = MAC_PYTHON if MAC_PYTHON.exists() else Path(sys.executable)
+    new = UNINSTALLER.with_name(UNINSTALLER.name + ".new")
+    shutil.rmtree(new, ignore_errors=True)
+    (new / "Contents" / "MacOS").mkdir(parents=True)
+    (new / "Contents" / "Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleName": UNINSTALLER.stem, "CFBundleIdentifier": APP_BUNDLE_ID + ".uninstall",
+        "CFBundleExecutable": "uninstall", "CFBundlePackageType": "APPL", "CFBundleVersion": VERSION,
+        "CFBundleShortVersionString": VERSION, "LSUIElement": True}))
+    launcher = new / "Contents" / "MacOS" / "uninstall"
+    launcher.write_text(UNINSTALLER_SCRIPT.format(python=shlex.quote(str(python)),
+                                                  script=shlex.quote(str(INSTALLED_SCRIPT))))
+    launcher.chmod(0o755)
+    bundle = app_bundle()
+    icon = bundle / "Contents" / "Resources" / "vt-quarantine.icns" if bundle else None
+    if icon and icon.exists():
+        (new / "Contents" / "Resources").mkdir()
+        shutil.copy(icon, new / "Contents" / "Resources" / "vt-quarantine.icns")
+        with open(new / "Contents" / "Info.plist", "rb") as f:
+            info = plistlib.load(f)
+        info["CFBundleIconFile"] = "vt-quarantine.icns"
+        (new / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+    shutil.rmtree(UNINSTALLER, ignore_errors=True)
+    os.replace(new, UNINSTALLER)
+
+
+def uninstall_app():
+    """The uninstaller app: ask, then remove everything (the app too)."""
+    dialogs = MacNotifier()
+    if dialogs.notify("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
+                      "and settings are deleted. Files in quarantine stay where they are.", "critical", "",
+                      [("cancel", "Cancel"), ("remove", "Remove")]) != "remove":
+        return 0
+    with contextlib.redirect_stdout(io.StringIO()):
+        uninstall()
+    dialogs.notify("vt-quarantine is removed", "", "critical", "", [("ok", "OK")])
     return 0
 
 
@@ -3519,6 +3640,7 @@ def install():
             logs = autostart_windows(script)
         elif MACOS:
             logs = autostart_macos(script)
+            make_uninstaller()
         else:
             logs = autostart_linux(script)
         remove_old_libs()
@@ -3543,7 +3665,21 @@ def updating():
         return False
 
 
-def uninstall(keep_data=False):
+def remove_mac_apps():
+    """The uninstaller, and the app where it was kept (if it's still ours)."""
+    import plistlib
+    shutil.rmtree(UNINSTALLER, ignore_errors=True)
+    try:
+        bundle = Path(APP_PLACE.read_text().strip())
+        with open(bundle / "Contents" / "Info.plist", "rb") as f:
+            ours = plistlib.load(f).get("CFBundleIdentifier") == APP_BUNDLE_ID
+    except (OSError, ValueError):
+        return
+    if ours and in_applications(bundle):
+        shutil.rmtree(bundle, ignore_errors=True)
+
+
+def uninstall(keep_data=False, stop=True):
     keep_data = keep_data or updating()
     if WINDOWS:
         import winreg
@@ -3559,7 +3695,8 @@ def uninstall(keep_data=False):
                 pass
         stop_running()
     elif MACOS:
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"], capture_output=True)
+        if stop:  # not when the program removes itself (it stops last)
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"], capture_output=True)
         LAUNCH_AGENT.unlink(missing_ok=True)
     elif UNIT_FILE.exists():
         if UNIT_MARKER not in UNIT_FILE.read_text():
@@ -3580,6 +3717,8 @@ def uninstall(keep_data=False):
     left = undo_browser_setup()
     unlock_quarantine()
     forget_key()
+    if MACOS:
+        remove_mac_apps()
     for d in (CONFIG_DIR, DATA_DIR):
         shutil.rmtree(d, ignore_errors=True)
     if not left:
@@ -3690,6 +3829,8 @@ def run():
             with contextlib.suppress(OSError):
                 old.unlink()
     threading.Thread(target=watch_browsers, daemon=True).start()
+    if MACOS:
+        threading.Thread(target=watch_app, daemon=True).start()
     updater = Updater()
     while True:
         try:
@@ -3720,6 +3861,8 @@ def main():
                         help=argparse.SUPPRESS)  # installers stopping the old copy for an upgrade
     group.add_argument("--install-app", action="store_true",
                        help=argparse.SUPPRESS)  # macOS: opening VirusTotal Quarantine.app
+    group.add_argument("--uninstall-app", action="store_true",
+                       help=argparse.SUPPRESS)  # macOS: opening Uninstall VirusTotal Quarantine
     group.add_argument("--set-key", action="store_true", help="save your VirusTotal API key")
     group.add_argument("--key-window", action="store_true",
                        help=argparse.SUPPRESS)  # Windows: the "Enter key" notification's window
@@ -3737,6 +3880,8 @@ def main():
         return install()
     if args.install_app:
         return install_app()
+    if args.uninstall_app:
+        return uninstall_app()
     if (args.purge or args.keep_data) and not args.uninstall:
         parser.error("--purge and --keep-data only go with --uninstall")
     if args.uninstall:

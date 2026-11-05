@@ -87,8 +87,12 @@ open it, and open **VirusTotal Quarantine**. It brings its own Python, so nothin
 else is needed. macOS blocks it the first time ("Apple could not verify…"): click
 **Done**, then **System Settings → Privacy & Security → Open Anyway** (near the
 bottom) and enter your password. A dialog asks for your API key (**Get a key**
-opens the page to copy it from). Afterwards you can keep the app (opening it again
-offers to uninstall) or move it to the Trash.
+opens the page to copy it from). Keep the app in **Applications**.
+
+**To remove it:** drag **VirusTotal Quarantine** to the Trash (within a few
+minutes everything goes: browser settings back, API key and settings deleted), or
+open **Uninstall VirusTotal Quarantine** in your Applications folder and click
+**Remove**.
 
 Or, without the app, paste this line into **Terminal** (it uses the Python from
 Apple's command line developer tools, which macOS offers to install):
@@ -317,7 +321,8 @@ and uninstalling.
 <summary><b>macOS</b>: tested on macOS 26 Tahoe; a few parts only in unit tests</summary>
 
 Tested on macOS 26 on an Intel Mac (in a virtual machine): the app (Open Anyway,
-the API key dialog, starting at sign-in, opening it again, uninstalling from it),
+the API key dialog, starting at sign-in, opening it again, removing it by the
+Trash, by Uninstall VirusTotal Quarantine and from the app itself),
 the Terminal line and `install.command`, the Keychain, Safari, Chrome and
 Firefox set up by themselves (Safari put back on uninstall), file locking, and
 downloads in all three: clean ones moved to
@@ -334,6 +339,11 @@ ones with Upload.
   needs an Apple Developer membership.
 - **Installed without the app, macOS lists it as "python3"** under Login Items
   & Extensions (the app's own copy is listed as vt-quarantine).
+- **Dragging the app to the Trash removes vt-quarantine** only if the app was
+  opened from Applications (opened from Downloads, macOS runs a temporary copy).
+  Whether it was thrown away or just moved is asked of Spotlight: with Spotlight
+  turned off, moving the app to another folder counts as throwing it away.
+  Uninstall VirusTotal Quarantine always works.
 </details>
 
 <details>
