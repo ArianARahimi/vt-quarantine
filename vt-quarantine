@@ -234,6 +234,7 @@ LIB_ROOT = DATA_DIR / "lib"
 BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the .msi
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
 INSTALLED_SCRIPT = DATA_DIR / "vt-quarantine.py"
+MAC_PYTHON = DATA_DIR / "python" / "bin" / "vt-quarantine"  # the macOS app's Python, under the name macOS lists
 
 # The systemd journal timestamps lines itself; anywhere else they need their own.
 log_timestamps = "JOURNAL_STREAM" not in os.environ
@@ -3346,13 +3347,74 @@ def autostart_linux_packaged():
     return "journalctl --user -u vt-quarantine -f"
 
 
+def app_bundle():
+    """The macOS app this copy runs from, or None."""
+    here = Path(__file__).resolve().parent
+    if MACOS and here.name == "Resources" and here.parent.name == "Contents":
+        return here.parent.parent
+    return None
+
+
+def installed_version():
+    try:
+        m = re.search(r'^VERSION = "([0-9.]+)"$', INSTALLED_SCRIPT.read_text(), re.M)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return parse_version(m.group(1)) if m else None
+
+
+def copy_app_python(bundle):
+    """The app's Python for this Mac, next to the program's data. Copied as plain
+    files, so the download's quarantine flag doesn't come along."""
+    arch = "arm64" if platform.machine() == "arm64" else "x86_64"
+    dest = MAC_PYTHON.parent.parent
+    new = dest.with_name("python.new")
+    shutil.rmtree(new, ignore_errors=True)
+    shutil.copytree(bundle / "Contents" / "Resources" / f"python-{arch}", new, copy_function=shutil.copy)
+    shutil.copy(new / "bin" / "python3", new / "bin" / MAC_PYTHON.name)
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(new, dest)
+
+
+def install_app():
+    """Opening the macOS app: install from it, or, with this version (or a newer
+    one) installed already, say so and offer to remove it."""
+    dialogs = MacNotifier()
+
+    def tell(title, text, buttons=(("ok", "OK"),)):
+        return dialogs.notify(title, text, "critical", "", list(buttons))
+
+    installed = installed_version()
+    if LAUNCH_AGENT.exists() and installed and installed >= parse_version(VERSION):
+        if tell(f"{APP} is running", f"Every download saved to {QUARANTINE} is checked on VirusTotal "
+                "before it reaches your Downloads folder.", [("ok", "OK"), ("remove", "Uninstall…")]) == "remove" \
+                and tell("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
+                         "and settings are deleted. Files in quarantine stay where they are.",
+                         [("cancel", "Cancel"), ("remove", "Remove")]) == "remove":
+            with contextlib.redirect_stdout(io.StringIO()):
+                uninstall()
+            tell("vt-quarantine is removed", "You can move this app to the Trash.")
+        return 0
+    try:
+        copy_app_python(app_bundle())
+        with contextlib.redirect_stdout(io.StringIO()):
+            install()
+    except (OSError, SystemExit) as e:
+        tell(f"{APP} couldn't be installed", str(getattr(e, "code", None) or e))
+        return 1
+    tell(f"{APP} is running", "It starts by itself when you sign in, and checks every download before it "
+         "reaches your Downloads folder. Keep this app to remove vt-quarantine later (open it again), "
+         "or move it to the Trash.")
+    return 0
+
+
 def autostart_macos(script):
     import plistlib
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCH_AGENT, "wb") as f:
         plistlib.dump({
             "Label": LAUNCH_AGENT_LABEL,
-            "ProgramArguments": [sys.executable, str(script)],
+            "ProgramArguments": [str(MAC_PYTHON if MAC_PYTHON.exists() else sys.executable), str(script)],
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ProcessType": "Interactive",
@@ -3656,6 +3718,8 @@ def main():
     parser.add_argument("--purge", action="store_true", help=argparse.SUPPRESS)  # what --uninstall does now
     parser.add_argument("--keep-data", action="store_true",
                         help=argparse.SUPPRESS)  # installers stopping the old copy for an upgrade
+    group.add_argument("--install-app", action="store_true",
+                       help=argparse.SUPPRESS)  # macOS: opening VirusTotal Quarantine.app
     group.add_argument("--set-key", action="store_true", help="save your VirusTotal API key")
     group.add_argument("--key-window", action="store_true",
                        help=argparse.SUPPRESS)  # Windows: the "Enter key" notification's window
@@ -3671,6 +3735,8 @@ def main():
     args = parser.parse_args()
     if args.install:
         return install()
+    if args.install_app:
+        return install_app()
     if (args.purge or args.keep_data) and not args.uninstall:
         parser.error("--purge and --keep-data only go with --uninstall")
     if args.uninstall:
