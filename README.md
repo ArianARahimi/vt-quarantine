@@ -315,14 +315,14 @@ and uninstalling.
 <details>
 <summary><b>macOS</b>: tested on macOS 26 Tahoe; a few parts only in unit tests</summary>
 
-Tested on macOS 26 (in a virtual machine): installing with `install.command`
-(through Open Anyway), the API key dialog (with Get a key and a wrong key), the
-launch agent, and a Safari download checked and moved to Downloads. Safari's
-settings were changed the way vt-quarantine changes them, by hand.
+Tested on macOS 26 (in a virtual machine): installing with the Terminal line and
+with `install.command` (through Open Anyway), the API key dialog (with Get a key
+and a wrong key), the Keychain (a reinstall kept the key), the launch agent,
+Safari set up by itself (and put back on uninstall), a clean download moved to
+Downloads, a flagged one shown with its buttons and deleted, and uninstalling.
 
-- **Untested on a Mac:** the automatic Safari setup as a whole (unit tests
-  only), notifications and their buttons, file locking, the Keychain, Chrome,
-  Firefox and the other browsers, automatic updates, and uninstalling.
+- **Untested on a Mac:** Show report / Mark as safe / Upload on a Mac, file
+  locking, Chrome, Firefox and the other browsers, and automatic updates.
 - **macOS lists vt-quarantine as "python3"** under Login Items & Extensions
   (and says so in its "Background Activity" note), since that's the program
   that runs it.
