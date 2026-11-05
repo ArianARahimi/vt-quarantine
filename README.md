@@ -301,6 +301,15 @@ and uninstalling.
 </details>
 
 <details>
+<summary><b>macOS</b>: not yet run on a Mac</summary>
+
+- **Nothing has run on a real Mac yet.** Unit tests cover the macOS code
+  (browser setup, the Keychain, the API key dialog, the launch agent, file
+  locking), but installing, notifications and their buttons, and Safari's
+  manual folder setting are untested.
+</details>
+
+<details>
 <summary><b>Linux packages</b>: tested on KDE Plasma (Arch) and GNOME (Fedora, Ubuntu)</summary>
 
 - **Tested on real desktops:** the Arch package on KDE Plasma, including an
