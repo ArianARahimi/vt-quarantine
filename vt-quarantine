@@ -43,6 +43,9 @@ from queue import Queue
 VERSION = "2.2.2"
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
+# Full paths: Windows looks for a bare program name in the current folder first.
+WINDOWS_DIR = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+SYSTEM32 = WINDOWS_DIR / "System32"
 HOME = Path.home()
 APP = "VirusTotal Quarantine"
 VT_HOST = "www.virustotal.com"
@@ -514,7 +517,7 @@ def show_in_folder(path):
     try:
         if WINDOWS:
             # A path can't contain quotes on Windows, and explorer wants exactly this form.
-            subprocess.Popen(f'explorer /select,"{path}"')
+            subprocess.Popen(f'"{WINDOWS_DIR / "explorer.exe"}" /select,"{path}"')
         elif MACOS:
             subprocess.Popen(["open", "-R", str(path)])
         else:
@@ -1054,7 +1057,7 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 def lock_file(path):
     try:
         if WINDOWS:
-            subprocess.run(["icacls", str(path), "/deny", f"{EVERYONE}:(RD)"], capture_output=True,
+            subprocess.run([str(SYSTEM32 / "icacls.exe"), str(path), "/deny", f"{EVERYONE}:(RD)"], capture_output=True,
                            check=True, creationflags=NO_WINDOW)
         elif stat.S_ISREG(os.lstat(path).st_mode):
             os.chmod(path, 0)
@@ -1065,7 +1068,7 @@ def lock_file(path):
 def unlock_file(path):
     try:
         if WINDOWS:
-            subprocess.run(["icacls", str(path), "/remove:d", EVERYONE], capture_output=True,
+            subprocess.run([str(SYSTEM32 / "icacls.exe"), str(path), "/remove:d", EVERYONE], capture_output=True,
                            check=True, creationflags=NO_WINDOW)
         elif stat.S_ISREG(os.lstat(path).st_mode):
             os.chmod(path, 0o666 & ~UMASK)
@@ -1513,6 +1516,8 @@ def ed25519_verify(public, message, signature):
     s = int.from_bytes(signature[32:], "little")
     if a is None or r is None or s >= order:
         return False
+    if same(mul(8, a), (0, 1, 1, 0)):
+        return False  # a small-order key, which any signature fits (as libsodium refuses)
     h = int.from_bytes(hashlib.sha512(signature[:32] + public + message).digest(), "little") % order
     return same(mul(s, base), add(r, mul(h, a)))
 
@@ -1677,11 +1682,10 @@ class Updater:
             UPDATING_MARKER.write_text(v)
             # It stops this copy and starts the new one; cmd starts it again once the
             # install is done, should that not have worked (a second copy just exits).
-            system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
             pythonw = Path(sys.executable).with_name("pythonw.exe")
-            steps = (f'start "" /wait "{system / "msiexec.exe"}" /i "{msi}" /qn /norestart'
+            steps = (f'start "" /wait "{SYSTEM32 / "msiexec.exe"}" /i "{msi}" /qn /norestart'
                      f' & start "" "{pythonw}" "{INSTALLED_SCRIPT}"')
-            subprocess.Popen(f'"{system / "cmd.exe"}" /d /s /c "{steps}"', close_fds=True, cwd=str(DATA_DIR),
+            subprocess.Popen(f'"{SYSTEM32 / "cmd.exe"}" /d /s /c "{steps}"', close_fds=True, cwd=str(DATA_DIR),
                              creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
             log(f"installing version {v}")
             return
