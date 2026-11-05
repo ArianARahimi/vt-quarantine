@@ -10,17 +10,17 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ArianARahimi/vt-quarantine?label=License&color=555&labelColor=333"></a>
 </div>
 
-<p align="center">
-  <img src="docs/notifications.png" width="332"
-       alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Show report / Delete buttons, and a clean file moved to Downloads automatically, with an Open folder button">
-</p>
-
 ## What it does
 
 Your browser saves each download into a hidden quarantine folder. vt-quarantine
 locks it, looks it up on [VirusTotal](https://www.virustotal.com), and moves it to
 your Downloads folder if no antivirus engine flags it. Anything flagged waits for
 you, with its report a click away.
+
+<p align="center">
+  <img src="docs/notifications.png" width="332"
+       alt="Notifications: a flagged setup.exe (66/68 engines) and an encrypted archive, both with Show report / Delete buttons, and a clean file moved to Downloads automatically, with an Open folder button">
+</p>
 
 - **Free and open source** (MIT), for **Windows 10/11, macOS and Linux**
 - **No window, no tray icon:** everything happens in notifications
