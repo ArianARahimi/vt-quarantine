@@ -2405,12 +2405,30 @@ def browser_pass(record):
     Downloads opening by themselves are turned off again whenever a set-up browser
     is closed. Returns (browsers set up now, browsers waiting to be closed, browsers
     covered)."""
-    done_ff = {entry["profile"] for entry in record.setdefault("firefox", [])}
-    done_cr = {entry["prefs"] for entry in record.setdefault("chromium", [])}
+    record.setdefault("firefox", [])
+    record.setdefault("chromium", [])
     set_up, waiting, covered = [], [], []
+    setup_new_firefox(record, set_up, waiting, covered)
+    firefox_auto_open_pass(record)
+    chromium_auto_open_pass(record)
+    setup_new_chromium(record, set_up, waiting, covered)
+    return set_up, waiting, covered
+
+
+def edge_on_windows(browser):
+    return WINDOWS and browser == "Edge"
+
+
+def end_edge(root):
+    """Edge never closes for good (Startup boost): end it while it has no window."""
+    return end_edge_in_background() and wait_closed(root)
+
+
+def setup_new_firefox(record, set_up, waiting, covered):
+    done = {entry["profile"] for entry in record["firefox"]}
     for browser, folder in firefox_profiles():
         covered.append(browser)
-        if str(folder) in done_ff:
+        if str(folder) in done:
             continue
         try:
             before = setup_firefox_profile(folder)
@@ -2422,41 +2440,50 @@ def browser_pass(record):
             log(f"set up {browser} profile {folder}")
             # Taken from user.js at its next start.
             (waiting if profile_in_use(folder) else set_up).append(browser)
+
+
+def firefox_auto_open_pass(record):
     for entry in record["firefox"]:
         folder = Path(entry["profile"])
-        if folder.is_dir() and not profile_in_use(folder):
-            try:
-                for mime, handler in firefox_auto_open_off(folder).items():
-                    entry.setdefault("handlers_before", {}).setdefault(mime, handler)
-                    log(f"{folder.name}: {mime} downloads no longer open by themselves")
-            except (OSError, ValueError) as e:
-                log(f"could not read the file handlers of {folder}: {e}")
+        if not folder.is_dir() or profile_in_use(folder):
+            continue
+        try:
+            for mime, handler in firefox_auto_open_off(folder).items():
+                entry.setdefault("handlers_before", {}).setdefault(mime, handler)
+                log(f"{folder.name}: {mime} downloads no longer open by themselves")
+        except (OSError, ValueError) as e:
+            log(f"could not read the file handlers of {folder}: {e}")
+
+
+def chromium_auto_open_pass(record):
     for entry in record["chromium"]:
-        prefs, root = Path(entry["prefs"]), Path(entry["prefs"]).parent.parent
+        prefs = Path(entry["prefs"])
+        root = prefs.parent.parent
         if not prefs.is_file():
             continue
         try:
             if chromium_running(root):
-                # Edge never closes for good (Startup boost): end it while it has no
-                # window, but only once it has saved a list of types to open.
-                if not (WINDOWS and entry.get("browser") == "Edge" and chromium_wants_auto_open(prefs)
-                        and end_edge_in_background() and wait_closed(root)):
+                # Edge is ended only once it has saved a list of types to open.
+                if not (edge_on_windows(entry.get("browser")) and chromium_wants_auto_open(prefs)
+                        and end_edge(root)):
                     continue
                 mark_clean_exit(prefs)
             if chromium_auto_open_off(prefs):
                 log(f"{prefs.parent}: downloads no longer open by themselves")
         except (OSError, ValueError) as e:
             log(f"could not read {prefs}: {e}")
+
+
+def setup_new_chromium(record, set_up, waiting, covered):
+    done = {entry["prefs"] for entry in record["chromium"]}
     for browser, root, prefs in chromium_profiles():
         covered.append(browser)
-        if str(prefs) in done_cr or chromium_points_here(prefs):
+        if str(prefs) in done or chromium_points_here(prefs):
             continue
-        ended = chromium_running(root) and WINDOWS and browser == "Edge" and \
-            end_edge_in_background() and wait_closed(root)
-        if chromium_running(root):
-            waiting.append(browser)
-            continue
-        if ended:
+        if chromium_running(root):  # asked once: on Flatpak each check starts a process
+            if not (edge_on_windows(browser) and end_edge(root)):
+                waiting.append(browser)
+                continue
             with contextlib.suppress(OSError, ValueError):
                 mark_clean_exit(prefs)
         try:
@@ -2468,7 +2495,6 @@ def browser_pass(record):
             record["chromium"].append({"browser": browser, "prefs": str(prefs), "before": before})
             log(f"set up {browser} profile {prefs.parent}")
             set_up.append(browser)
-    return set_up, waiting, covered
 
 
 def save_browser_record(record):
