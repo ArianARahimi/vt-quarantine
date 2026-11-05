@@ -1797,7 +1797,7 @@ USER_JS_RESTORE = ("// vt-quarantine was uninstalled while this browser was open
 DOWNLOAD_PREFS = ("browser.download.folderList", "browser.download.dir", "browser.download.useDownloadDir",
                   "browser.download.lastDir", "browser.download.lastDir.savePerSite")
 PREF_LINE = re.compile(r'^\s*user_pref\("([^"\\]+)",\s*(.*?)\);[ \t]*$', re.M)
-BROWSER_HELP = f"https://github.com/{REPO}#browser-setup"
+BROWSER_HELP = f"https://github.com/{REPO}/blob/stable/docs/GUIDE.md#browser-setup"
 
 
 def firefox_profile_roots():
@@ -3388,6 +3388,8 @@ def install_app():
         return dialogs.notify(title, text, "critical", "", list(buttons))
 
     bundle = app_bundle()
+    if move_to_applications(bundle):
+        return 0  # it opens again from there
     installed = installed_version()
     if LAUNCH_AGENT.exists() and installed and installed >= parse_version(VERSION):
         remember_app_place(bundle)
@@ -3422,6 +3424,42 @@ def in_applications(bundle):
     path = str(bundle)
     return "/AppTranslocation/" not in path and \
         (path.startswith("/Applications/") or path.startswith(str(HOME / "Applications") + "/"))
+
+
+def is_our_app(bundle):
+    import plistlib
+    try:
+        with open(bundle / "Contents" / "Info.plist", "rb") as f:
+            return plistlib.load(f).get("CFBundleIdentifier") == APP_BUNDLE_ID
+    except (OSError, ValueError):
+        return False
+
+
+def move_to_applications(bundle):
+    """Opened where Safari unpacked it (Downloads): move the app to Applications, so
+    the Trash can remove vt-quarantine, and open it from there. Returns whether it did."""
+    if bundle is None or in_applications(bundle):
+        return False
+    original = HOME / "Downloads" / f"{APP}.app"
+    if not is_our_app(original):
+        return False
+    folder = Path("/Applications") if os.access("/Applications", os.W_OK) else HOME / "Applications"
+    target = folder / original.name
+    try:
+        folder.mkdir(exist_ok=True)
+        if target.exists():
+            if not is_our_app(target):
+                return False
+            shutil.rmtree(target)  # an older copy
+        shutil.move(str(original), str(target))
+        # Moved by anything but Finder, macOS would keep running it from a temporary
+        # copy. It's been allowed to open (it's running), so the download mark can go.
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(target)], capture_output=True)
+        subprocess.Popen(["open", "-n", str(target)])  # -n: this copy is still running
+    except OSError as e:
+        log(f"could not move the app to {folder}: {e}")
+        return False
+    return True
 
 
 def remember_app_place(bundle):
@@ -3667,15 +3705,12 @@ def updating():
 
 def remove_mac_apps():
     """The uninstaller, and the app where it was kept (if it's still ours)."""
-    import plistlib
     shutil.rmtree(UNINSTALLER, ignore_errors=True)
     try:
         bundle = Path(APP_PLACE.read_text().strip())
-        with open(bundle / "Contents" / "Info.plist", "rb") as f:
-            ours = plistlib.load(f).get("CFBundleIdentifier") == APP_BUNDLE_ID
-    except (OSError, ValueError):
+    except OSError:
         return
-    if ours and in_applications(bundle):
+    if is_our_app(bundle) and in_applications(bundle):
         shutil.rmtree(bundle, ignore_errors=True)
 
 

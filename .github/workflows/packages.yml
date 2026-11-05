@@ -224,6 +224,12 @@ jobs:
         run: |
           v=${TAG#v}
           cp vt-quarantine "dist/vt-quarantine-$v.py"  # what script installs update to
+          # Fixed names too, for the README's download buttons (releases/latest/download/<name>).
+          cp "dist/vt-quarantine-$v-macos.zip" dist/VirusTotal-Quarantine-macOS.zip
+          cp "dist/vt-quarantine-$v.msi" dist/VirusTotal-Quarantine-Windows.msi
+          cp "dist/vt-quarantine_$v-1_all.deb" dist/vt-quarantine-linux.deb
+          cp "dist/vt-quarantine-$v-1.noarch.rpm" dist/vt-quarantine-linux.rpm
+          cp "dist/vt-quarantine-$v-1-any.pkg.tar.zst" dist/vt-quarantine-linux.pkg.tar.zst
           cd dist
           # Written outside dist first, so the list can't include itself.
           sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
