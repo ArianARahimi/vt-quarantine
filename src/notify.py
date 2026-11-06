@@ -304,10 +304,8 @@ class MacNotifier(Notifier):
 
     # Text goes in as arguments, never into the script source, so a filename
     # can't inject AppleScript. The first argument is a fixed word so osascript
-    # never mistakes a title starting with "-" for an option. "activate" brings the
-    # dialog to the front: running in the background, its first click would only
-    # focus the window, not press the button. There's no default button, so a
-    # Return typed into the app that had the focus doesn't answer it.
+    # never mistakes a title starting with "-" for an option. "activate": so the
+    # first click on a button counts.
     DIALOG = """on run argv
     activate
     set r to display dialog (item 3 of argv) with title (item 2 of argv) buttons (items 4 thru -1 of argv) with icon caution giving up after 86400
