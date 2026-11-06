@@ -11,6 +11,7 @@ are downloaded on first run, checked against pinned SHA-256 hashes and kept in
 its own folder. Installed from a Linux package (.deb/.rpm/Arch), it uses the
 distribution's packages instead and downloads nothing.
 """
+# Built from the parts in src/ by tools/bundle.py: change those, not this file.
 import argparse
 import collections
 import configparser

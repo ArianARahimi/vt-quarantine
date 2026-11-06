@@ -3,6 +3,24 @@
 Everything here is for building, releasing or running vt-quarantine from
 source. For installing it, see the [README](../README.md#install).
 
+## Source layout
+
+The program ships as the single file `vt-quarantine`, so installs, updates and
+their signatures cover exactly one file and nothing can slip a module in beside
+it. That file is built from the parts in [`src/`](../src), one per area
+(notifications, VirusTotal, quarantine, updates, browsers, API key, setup,
+command line); [`tools/bundle.py`](../tools/bundle.py) lists them in order.
+Each part is plain code that sees the names of the parts before it, as if they
+were one file. After changing a part:
+
+```sh
+python3 tools/bundle.py          # rebuild vt-quarantine
+python3 tools/bundle.py --check  # what CI runs: fails if vt-quarantine is stale
+```
+
+Commit `vt-quarantine` together with the parts. Run and test the built file,
+not the parts on their own.
+
 ## Running from a git checkout (Linux, systemd)
 
 To keep the program in `~/.local/bin` (for example as a symlink into a git
@@ -20,7 +38,7 @@ A git checkout never updates itself.
 
 ## Configuration
 
-Settings are constants at the top of `vt-quarantine`: poll interval, rate
+Settings are constants at the top of `src/common.py`: poll interval, rate
 limit, upload size limits, analysis timeout, and the list of file types that
 are uploaded without asking.
 

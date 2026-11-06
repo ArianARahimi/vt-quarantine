@@ -35,6 +35,9 @@ jobs:
           apt-get install -y --no-install-recommends python3 wixl msitools ca-certificates
           dpkg-query -W wixl
 
+      - name: Check vt-quarantine was built from src/
+        run: python3 tools/bundle.py --check
+
       - name: Check the tag matches the version
         if: github.ref_type == 'tag'
         env:
