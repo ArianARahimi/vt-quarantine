@@ -41,7 +41,7 @@ import zipfile
 from pathlib import Path
 from queue import Queue
 
-VERSION = "2.2.3"
+VERSION = "2.3.0"
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 # Full paths: Windows looks for a bare program name in the current folder first.
