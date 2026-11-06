@@ -110,19 +110,16 @@ deleted. Files left in quarantine are unlocked, never deleted.
 </details>
 
 <details>
-<summary><b>Windows</b>: tested on Windows 11; a few parts still only under Wine</summary>
+<summary><b>Windows</b>: tested on Windows 11</summary>
 
 Tested on a real Windows 11 (in a virtual machine): installing, the API key
 window, notifications and their buttons, checking downloads (with Windows'
 own certificate check), locking files, the quarantine folder (hidden, and made
 again if deleted), browser setup for Chrome, Edge, Brave and Opera GX (with
 "Always open files of this type" turned off again), waiting while
-something is fullscreen, the clipboard, upgrading by hand (the key is kept)
-and uninstalling.
+something is fullscreen, the clipboard, upgrading by hand (the key is kept),
+updating itself (2.2.3 to 2.3.0) and uninstalling.
 
-- **Automatic updates have only run under Wine.** Downloading the new `.msi`
-  and installing it silently passed there; on Windows they need a newer
-  release to update to.
 - **The installer is unsigned.** Edge holds the download ("isn't commonly
   downloaded": **⋯ → Keep → Keep anyway**) until it's code-signed and known.
 - **Firefox, Waterfox, LibreWolf, Floorp, Chromium, Vivaldi and Opera** are set
@@ -154,15 +151,14 @@ Tested on macOS 26 on an Intel Mac (in a virtual machine): the app (Open Anyway,
 the API key dialog, starting at sign-in, opening it again, removing it by the
 Trash, by Uninstall VirusTotal Quarantine and from the app itself),
 the Terminal line and `install.command`, the Keychain, Safari, Chrome and
-Firefox set up by themselves (Safari put back on uninstall), file locking, and
+Firefox set up by themselves (Safari put back on uninstall), file locking,
+updating itself (2.2.3 to 2.3.0), and
 downloads in all three: clean ones moved to
 Downloads, flagged ones shown with Show report, Delete and Mark as safe, unknown
 ones with Upload.
 
 - **The app is untested on Apple silicon Macs** (M1 and later). It carries a
   Python built for them, which should run, but no one has tried it yet.
-- **Automatic updates are untested on a Mac.** They need a newer release to
-  update to.
 - **Brave, Edge, Opera, Vivaldi, Chromium and LibreWolf are untested on a Mac**;
   they use the same code as Chrome and Firefox.
 - **The app is unsigned**, so it needs Open Anyway the first time. A signed app
