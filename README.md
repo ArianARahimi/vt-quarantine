@@ -96,8 +96,11 @@ deleted. Files left in quarantine are unlocked, never deleted.
 
 - **A clean result isn't a guarantee.** New or targeted malware often has no
   detections yet. VirusTotal is one layer of protection, not a sandbox.
-- **Only the quarantine folder is covered.** Other tools, and Save As dialogs
-  pointed at another folder, skip it.
+- **Only the quarantine folder is watched.** Other tools, and Save As dialogs
+  pointed at another folder, skip it. Check such files by hand with
+  `vt-quarantine --scan <file or folder>`.
+- **`--scan` has only been run for real on Linux.** It uses the same checks as
+  downloads, but hasn't been tried on a real Windows or Mac yet.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the

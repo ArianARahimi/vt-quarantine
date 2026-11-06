@@ -165,17 +165,26 @@ password); `vt-quarantine --auto-update off` stops update checks completely.
 <summary><b>Commands</b></summary>
 
 ```
-vt-quarantine                     run (what autostart does)
-vt-quarantine --install           set up, ask for the API key, start at sign-in
-vt-quarantine --uninstall         stop, undo the browser setup, forget everything
-vt-quarantine --set-key           save or replace the API key
-vt-quarantine --check             fetch missing packages and check notifications
-vt-quarantine --test-notification show a test notification with buttons
-vt-quarantine --auto-update off   stop checking for updates (on: start again;
-                                  quiet: update without a notification)
-vt-quarantine --forget-safe       forget the files you marked safe
-vt-quarantine --version
+vt-quarantine                          run (what autostart does)
+vt-quarantine -S, --scan PATH...       check files, or the files in a folder, and print
+                                       the verdicts and which engines flag them
+vt-quarantine -I, --install            set up, ask for the API key, start at sign-in
+vt-quarantine -U, --uninstall          stop, undo the browser setup, forget everything
+vt-quarantine -K, --set-key            save or replace the API key
+vt-quarantine -C, --check              fetch missing packages and check notifications
+vt-quarantine -T, --test-notification  show a test notification with buttons
+vt-quarantine -A, --auto-update off    stop checking for updates (on: start again;
+                                       quiet: update without a notification)
+vt-quarantine -F, --forget-safe        forget the files you marked safe
+vt-quarantine -V, --version
 ```
+
+`--scan` only reports: nothing is moved, locked or deleted. Unknown programs are
+uploaded to VirusTotal; other unknown files only after you answer yes (uploads can
+be downloaded by VT subscribers). It exits with 0 if every file is clean, 1 if any
+is flagged, and 2 otherwise (unknown, no verdict or an error), so scripts can use
+it. Subfolders aren't scanned. It shares the free API's 4 lookups a minute with the
+running program.
 
 On Windows, run these with the program's own Python in a Command Prompt, for
 example to change the API key or to troubleshoot:
@@ -183,6 +192,7 @@ example to change the API key or to troubleshoot:
 ```
 "%LOCALAPPDATA%\vt-quarantine\python\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --set-key
 "%LOCALAPPDATA%\vt-quarantine\python\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --check
+"%LOCALAPPDATA%\vt-quarantine\python\python.exe" "%LOCALAPPDATA%\vt-quarantine\vt-quarantine.py" --scan "%USERPROFILE%\Desktop\file.exe"
 ```
 </details>
 
