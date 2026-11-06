@@ -99,8 +99,6 @@ deleted. Files left in quarantine are unlocked, never deleted.
 - **Only the quarantine folder is watched.** Other tools, and Save As dialogs
   pointed at another folder, skip it. Check such files by hand with
   `vt-quarantine --scan <file or folder>`.
-- **`--scan` hasn't been run on a real Windows yet** (it has on Linux and macOS).
-  It uses the same checks as downloads.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the
