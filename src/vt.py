@@ -38,7 +38,8 @@ def vt(method, url, upload=None):
     if not url.startswith("http"):
         url = API + url
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname != VT_HOST:
+    hosts = (VT_HOST, VT_UPLOAD_HOST) if upload else (VT_HOST,)  # big files upload elsewhere
+    if parts.scheme != "https" or parts.hostname not in hosts:
         raise RuntimeError(f"refusing to send the API key to {parts.scheme}://{parts.hostname}")
     for _ in range(6):
         limiter.wait()

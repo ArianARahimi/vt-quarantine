@@ -50,6 +50,7 @@ SYSTEM32 = WINDOWS_DIR / "System32"
 HOME = Path.home()
 APP = "VirusTotal Quarantine"
 VT_HOST = "www.virustotal.com"
+VT_UPLOAD_HOST = "bigfiles.virustotal.com"  # where /files/upload_url points
 API = f"https://{VT_HOST}/api/v3"
 USER_AGENT = f"vt-quarantine/{VERSION}"
 
