@@ -2360,9 +2360,12 @@ def firefox_auto_open_off(folder):
     Returns {type: its handler before} for those changed. Only while it's closed."""
     handlers = folder / "handlers.json"
     try:
-        data = json.loads(handlers.read_text(encoding="utf-8"))
+        text = handlers.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
+    if not text.strip():
+        return {}  # empty: no file types set yet
+    data = json.loads(text)
     changed = {}
     types = data.get("mimeTypes") if isinstance(data, dict) else None
     for mime, handler in (types.items() if isinstance(types, dict) else ()):
@@ -2618,6 +2621,9 @@ def setup_new_firefox(record, set_up, waiting, covered):
             (waiting if profile_in_use(folder) else set_up).append(browser)
 
 
+handler_errors = set()  # (folder, error) already logged: the pass runs every few minutes
+
+
 def firefox_auto_open_pass(record):
     for entry in record["firefox"]:
         folder = Path(entry["profile"])
@@ -2628,7 +2634,9 @@ def firefox_auto_open_pass(record):
                 entry.setdefault("handlers_before", {}).setdefault(mime, handler)
                 log(f"{folder.name}: {mime} downloads no longer open by themselves")
         except (OSError, ValueError) as e:
-            log(f"could not read the file handlers of {folder}: {e}")
+            if (folder, str(e)) not in handler_errors:
+                handler_errors.add((folder, str(e)))
+                log(f"could not read the file handlers of {folder}: {e}")
 
 
 def chromium_auto_open_pass(record):
