@@ -19,12 +19,28 @@ KEY_PAGE_URL = "https://www.virustotal.com/gui/my-apikey"
 GUIDE_URL = "https://github.com/ArianARahimi/vt-quarantine#install"
 
 
+REMOVE_QUESTION = ("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
+                   "and settings are deleted. Files in quarantine stay where they are.")
+
+
+def gui_python():
+    """The Python to start background copies with: pythonw.exe on Windows (no
+    console), the app's own Python on macOS, else this one."""
+    if WINDOWS:
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        return pythonw if pythonw.exists() else Path(sys.executable)
+    return MAC_PYTHON if MACOS and MAC_PYTHON.exists() else Path(sys.executable)
+
+
+def launchctl_bootout():
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"], capture_output=True)
+
+
 def key_window():
     """Windows and macOS: run the key window (on Windows without a console) and
     wait for it; True if a key was saved, which is then picked up straight away."""
-    pythonw = Path(sys.executable).with_name("pythonw.exe") if WINDOWS else Path(sys.executable)
-    return subprocess.run([str(pythonw if pythonw.exists() else sys.executable),
-                           str(Path(__file__).resolve()), "--key-window"]).returncode == 0
+    python = gui_python() if WINDOWS else Path(sys.executable)
+    return subprocess.run([str(python), str(Path(__file__).resolve()), "--key-window"]).returncode == 0
 
 
 def parse_key(text):
@@ -301,6 +317,13 @@ def systemctl(*args, check=True):
     return subprocess.run(["systemctl", "--user", *args], check=check, capture_output=True, text=True)
 
 
+def start_service():
+    systemctl("daemon-reload")
+    systemctl("enable", "vt-quarantine.service")
+    systemctl("restart", "vt-quarantine.service")
+    return "journalctl --user -u vt-quarantine -f"
+
+
 def autostart_linux(script):
     if UNIT_FILE.exists() and UNIT_MARKER not in UNIT_FILE.read_text():
         sys.exit(f"{UNIT_FILE} exists and wasn't written by --install; leaving it alone.")
@@ -319,10 +342,7 @@ RestartSec=10
 [Install]
 WantedBy=graphical-session.target
 """)
-    systemctl("daemon-reload")
-    systemctl("enable", "vt-quarantine.service")
-    systemctl("restart", "vt-quarantine.service")
-    return "journalctl --user -u vt-quarantine -f"
+    return start_service()
 
 
 def autostart_linux_packaged():
@@ -335,10 +355,7 @@ def autostart_linux_packaged():
         systemctl("disable", "vt-quarantine.service", check=False)
         UNIT_FILE.unlink()
         INSTALLED_SCRIPT.unlink(missing_ok=True)
-    systemctl("daemon-reload")
-    systemctl("enable", "vt-quarantine.service")
-    systemctl("restart", "vt-quarantine.service")
-    return "journalctl --user -u vt-quarantine -f"
+    return start_service()
 
 
 def app_bundle():
@@ -386,9 +403,7 @@ def install_app():
         remember_app_place(bundle)
         if tell(f"{APP} is running", f"Every download saved to {QUARANTINE} is checked on VirusTotal "
                 "before it reaches your Downloads folder.", [("ok", "OK"), ("remove", "Uninstall…")]) == "remove" \
-                and tell("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
-                         "and settings are deleted. Files in quarantine stay where they are.",
-                         [("cancel", "Cancel"), ("remove", "Remove")]) == "remove":
+                and tell(*REMOVE_QUESTION, [("cancel", "Cancel"), ("remove", "Remove")]) == "remove":
             with contextlib.redirect_stdout(io.StringIO()):
                 uninstall()
             tell("vt-quarantine is removed", "You can move this app to the Trash.")
@@ -473,14 +488,19 @@ def app_copies():
     return [Path(line) for line in out.splitlines() if line.endswith(".app") and "/.Trash/" not in line]
 
 
+def kept_app():
+    """Where the app is kept (see remember_app_place), or None."""
+    try:
+        return Path(APP_PLACE.read_text().strip())
+    except OSError:
+        return None
+
+
 def app_thrown_away(missing_before):
     """One check of the kept app: True once it has been gone (and nowhere else)
     for two checks in a row, which means it went in the Trash."""
-    try:
-        place = Path(APP_PLACE.read_text().strip())
-    except OSError:
-        return False
-    if place.exists():
+    place = kept_app()
+    if place is None or place.exists():
         return False
     moved = [copy for copy in app_copies() if copy.exists() and in_applications(copy)]
     if moved:
@@ -496,14 +516,13 @@ def watch_app():
     while True:
         time.sleep(60 if not missing else 120)
         try:
-            was_missing = missing
-            missing = not Path(APP_PLACE.read_text().strip()).exists() if APP_PLACE.exists() else False
+            was_missing, place = missing, kept_app()
+            missing = place is not None and not place.exists()
             if missing and app_thrown_away(was_missing):
                 log("the app is in the Trash: removing vt-quarantine")
                 with contextlib.redirect_stdout(io.StringIO()):
                     uninstall(stop=False)
-                subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"],
-                               capture_output=True)  # last: this ends the program
+                launchctl_bootout()  # last: this ends the program
                 return
         except Exception as e:
             log(f"app check failed: {e}")
@@ -520,7 +539,7 @@ def make_uninstaller():
     script that run the installed copy's uninstall."""
     import plistlib
     import shlex
-    python = MAC_PYTHON if MAC_PYTHON.exists() else Path(sys.executable)
+    python = gui_python()
     new = UNINSTALLER.with_name(UNINSTALLER.name + ".new")
     shutil.rmtree(new, ignore_errors=True)
     (new / "Contents" / "MacOS").mkdir(parents=True)
@@ -548,9 +567,7 @@ def make_uninstaller():
 def uninstall_app():
     """The uninstaller app: ask, then remove everything (the app too)."""
     dialogs = MacNotifier()
-    if dialogs.notify("Remove vt-quarantine?", "Your browsers get their download folder back, and your API key "
-                      "and settings are deleted. Files in quarantine stay where they are.", "critical", "",
-                      [("cancel", "Cancel"), ("remove", "Remove")]) != "remove":
+    if dialogs.notify(*REMOVE_QUESTION, "critical", "", [("cancel", "Cancel"), ("remove", "Remove")]) != "remove":
         return 0
     with contextlib.redirect_stdout(io.StringIO()):
         uninstall()
@@ -564,25 +581,23 @@ def autostart_macos(script):
     with open(LAUNCH_AGENT, "wb") as f:
         plistlib.dump({
             "Label": LAUNCH_AGENT_LABEL,
-            "ProgramArguments": [str(MAC_PYTHON if MAC_PYTHON.exists() else sys.executable), str(script)],
+            "ProgramArguments": [str(gui_python()), str(script)],
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ProcessType": "Interactive",
             "StandardOutPath": str(LOG_FILE),
             "StandardErrorPath": str(LOG_FILE),
         }, f)
-    domain = f"gui/{os.getuid()}"
-    subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCH_AGENT_LABEL}"], capture_output=True)
-    subprocess.run(["launchctl", "bootstrap", domain, str(LAUNCH_AGENT)], check=True, capture_output=True)
+    launchctl_bootout()
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)], check=True,
+                   capture_output=True)
     return str(LOG_FILE)
 
 
 def autostart_windows(script):
     """Per-user Run key (no admin needed), then start it now."""
     import winreg
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    if not pythonw.exists():
-        pythonw = Path(sys.executable)
+    pythonw = gui_python()
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_SZ, f'"{pythonw}" "{script}"')
     # Listed under Settings > Apps, so it can be removed like any other program.
@@ -697,11 +712,8 @@ def updating():
 def remove_mac_apps():
     """The uninstaller, and the app where it was kept (if it's still ours)."""
     shutil.rmtree(UNINSTALLER, ignore_errors=True)
-    try:
-        bundle = Path(APP_PLACE.read_text().strip())
-    except OSError:
-        return
-    if is_our_app(bundle) and in_applications(bundle):
+    bundle = kept_app()
+    if bundle and is_our_app(bundle) and in_applications(bundle):
         shutil.rmtree(bundle, ignore_errors=True)
 
 
@@ -709,20 +721,16 @@ def uninstall(keep_data=False, stop=True):
     keep_data = keep_data or updating()
     if WINDOWS:
         import winreg
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.DeleteValue(key, "vt-quarantine")
-        except FileNotFoundError:
-            pass
+        with contextlib.suppress(FileNotFoundError), \
+                winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, "vt-quarantine")
         for path in (AUMID_KEY, UNINSTALL_KEY):
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
-            except FileNotFoundError:
-                pass
         stop_running()
     elif MACOS:
         if stop:  # not when the program removes itself (it stops last)
-            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"], capture_output=True)
+            launchctl_bootout()
         LAUNCH_AGENT.unlink(missing_ok=True)
     elif UNIT_FILE.exists():
         if UNIT_MARKER not in UNIT_FILE.read_text():
