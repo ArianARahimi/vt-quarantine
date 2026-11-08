@@ -186,14 +186,16 @@ ones with Upload.
   Firefox (on Ubuntu the Snap), clean and flagged downloads with every button,
   uninstalling and removing the package. GitHub Actions also installs and
   removes each package on Debian 13, Ubuntu 24.04 and 22.04, Fedora 45 and Arch.
-- **Not yet tested with the .deb and .rpm:** an update through the
-  notification, and keeping the API key in GNOME Keyring (a live session has
-  no keyring, so the key went to the plain file, as designed).
+- **Not yet tested with the .deb and .rpm:** keeping the API key in GNOME
+  Keyring (a live session has no keyring, so the key went to the plain file,
+  as designed). An update through the notification was tested on Ubuntu 26.04
+  and Fedora 44.
 - **Other RPM-based distributions are untested.** On openSUSE the dependency
   names may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
-- **An update from your package manager takes effect at your next sign-in.**
-  `systemctl --user restart vt-quarantine` switches straight away. Updates
-  through the notification restart it themselves.
+- **An update from your package manager takes effect within about 20 seconds:**
+  vt-quarantine notices its new copy and restarts into it (never in the middle
+  of a check). Tested by replacing the program file; not yet with a real
+  package manager upgrade.
 - **Browser setup on Linux has run for real with Brave (Flatpak) on KDE
   Plasma**: set up while closed (also after it was killed), a real download
   went through quarantine, and uninstalling put it back. Chrome, Chromium,
