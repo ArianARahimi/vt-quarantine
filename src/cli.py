@@ -139,6 +139,52 @@ def scan(targets, as_json=False):
     return SCAN_CODES["flagged"] if SCAN_CODES["flagged"] in codes else max(codes)
 
 
+def wait_for_key():
+    """The API key, once there is one. Until then it's said to be missing (once): on
+    Windows and macOS with the key window (by itself right after installing), elsewhere
+    with how to set it. A key saved any other way (--set-key, the key file) counts too."""
+    saved = threading.Event()  # the key window saved one: look again straight away
+    prompt, warned = None, False
+    while not (key := startup_key()):
+        if not warned:
+            warned = True
+            log(f"no API key at {KEY_FILE}")
+            wait_for_free_screen("the API key warning")
+            if WINDOWS or MACOS:
+                if not KEY_ASKED.exists():
+                    KEY_ASKED.parent.mkdir(parents=True, exist_ok=True)
+                    KEY_ASKED.touch()
+                    if key_window():
+                        continue
+                prompt = offer_key_window(saved)
+            else:
+                notifier.notify("No VirusTotal API key",
+                                f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
+                                "Downloads stay quarantined until then.",
+                                "critical", "dialog-error")
+        saved.wait(30)
+        saved.clear()
+    if prompt is not None:
+        notifier.close(prompt)
+    return key
+
+
+def offer_key_window(saved):
+    """The "No VirusTotal API key" note, whose Enter key button opens the key window.
+    Where a note can carry a button (Windows) it stays up without blocking, so a key
+    saved another way is still noticed; macOS needs a dialog, which waits. Returns
+    what to close once there's a key."""
+    def enter(choice):
+        if choice == "key" and key_window():
+            saved.set()
+    summary, body = "No VirusTotal API key", "Downloads stay quarantined until you enter one."
+    if not notifier.transient_buttons:
+        enter(notifier.notify(summary, body, "critical", "dialog-error", [("key", "Enter key")]))
+        return None
+    return notifier.show(summary, body, "dialog-error", [("key", "Enter key")],
+                         lambda choice: threading.Thread(target=enter, args=(choice,), daemon=True).start())
+
+
 # --- Main --------------------------------------------------------------------
 
 def run():
@@ -166,31 +212,7 @@ def run():
             log(f"notifications unavailable ({e}), retrying")
             time.sleep(10)
 
-    warned = False
-    while not (api_key := startup_key()):
-        if not warned:
-            warned = True
-            log(f"no API key at {KEY_FILE}")
-            wait_for_free_screen("the API key warning")
-            if WINDOWS or MACOS:
-                # Right after installing: the key window itself, once. After that (or if it's
-                # closed without a key) a notification that opens it.
-                if not KEY_ASKED.exists():
-                    KEY_ASKED.parent.mkdir(parents=True, exist_ok=True)
-                    KEY_ASKED.touch()
-                    if key_window():
-                        continue
-                choice = notifier.notify("No VirusTotal API key",
-                                         "Downloads stay quarantined until you enter one.",
-                                         "critical", "dialog-error", [("key", "Enter key")])
-                if choice == "key" and key_window():
-                    continue
-            else:
-                notifier.notify("No VirusTotal API key",
-                                f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
-                                "Downloads stay quarantined until then.",
-                                "critical", "dialog-error")
-        time.sleep(30)
+    api_key = wait_for_key()
 
     q = Quarantine()
     log(f"vt-quarantine {VERSION} watching {QUARANTINE}")
@@ -208,7 +230,7 @@ def run():
     threading.Thread(target=watch_browsers, daemon=True).start()
     if MACOS:
         threading.Thread(target=watch_app, daemon=True).start()
-    updater = Updater()
+    updater, own_file = Updater(), FileWatch()
     while True:
         try:
             q.scan()
@@ -216,6 +238,9 @@ def run():
             log(f"scan error: {e}")
         if updater.due():
             threading.Thread(target=updater.check, daemon=True).start()
+        if own_file.replaced():
+            log("this program was replaced (a package upgraded by hand?)")
+            updater.restart.set()
         if updater.restart.is_set():
             with q.lock:
                 idle = not q.active

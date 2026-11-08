@@ -290,6 +290,46 @@ class Updater:
             shutil.rmtree(folder, ignore_errors=True)
 
 
+class FileWatch:
+    """Notices this program's own file being replaced (a Linux package upgraded by hand
+    keeps the old copy running), so run() can restart into it like after an update. Only
+    once the new file has stopped changing for a check, and only if it compiles."""
+
+    CHECK_SECONDS = 10
+
+    def __init__(self, path=None):
+        self.path = Path(path or __file__).resolve()
+        self.seen = self.stamp()
+        self.settling = None
+        self.next_check = time.monotonic() + self.CHECK_SECONDS
+
+    def stamp(self):
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return None
+        return st.st_ino, st.st_size, st.st_mtime_ns
+
+    def replaced(self):
+        if time.monotonic() < self.next_check:
+            return False
+        self.next_check = time.monotonic() + self.CHECK_SECONDS
+        now = self.stamp()
+        if now is None or now == self.seen:
+            self.settling = None
+            return False
+        if now != self.settling:
+            self.settling = now  # still being written, maybe: look again next time
+            return False
+        self.seen = now
+        try:
+            compile(self.path.read_bytes(), str(self.path), "exec")
+        except (OSError, SyntaxError, ValueError) as e:
+            log(f"this program was replaced, but the new copy doesn't load ({e}); not restarting")
+            return False
+        return True
+
+
 def restart(lock):
     """Run the updated program in place of this one."""
     script = str(Path(__file__).resolve())
