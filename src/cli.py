@@ -66,13 +66,10 @@ def scan_file(path):
     bad, sus, total = counts(stats)
     result.update(malicious=bad, suspicious=sus, engines=total,
                   flagged_by=dict(flagged_by(results)), report=report_url(sha))
-    if total == 0:
-        return {**result, "verdict": "no_verdict", "reason": "no_engines"}
-    if bad or sus:
-        return {**result, "verdict": "flagged"}
-    if "encrypted" in (tags or ()):
-        return {**result, "verdict": "no_verdict", "reason": "encrypted"}
-    return {**result, "verdict": "clean"}
+    kind = classify(stats, tags)
+    if kind in ("clean", "flagged"):
+        return {**result, "verdict": kind}
+    return {**result, "verdict": "no_verdict", "reason": kind}
 
 
 def print_result(r):
@@ -171,10 +168,10 @@ def run():
     warned = False
     while not (api_key := startup_key()):
         if not warned:
+            warned = True
             log(f"no API key at {KEY_FILE}")
             wait_for_free_screen("the API key warning")
             if WINDOWS or MACOS:
-                warned = True
                 # Right after installing: the key window itself, once. After that (or if it's
                 # closed without a key) a notification that opens it.
                 if not KEY_ASKED.exists():
@@ -192,7 +189,6 @@ def run():
                                 f"Run “vt-quarantine --set-key” or put your key in {html.escape(str(KEY_FILE))}.\n"
                                 "Downloads stay quarantined until then.",
                                 "critical", "dialog-error")
-            warned = True
         time.sleep(30)
 
     q = Quarantine()

@@ -172,6 +172,17 @@ def verdict_line(name, stats, results):
     return f"verdict on {name}: {bad}/{total} malicious, {sus} suspicious" + (f" ({flagged})" if flagged else "")
 
 
+def classify(stats, tags):
+    """clean, flagged, no_engines or encrypted (engines can't see inside a
+    password-protected archive, so 0 detections means nothing there)."""
+    bad, sus, total = counts(stats)
+    if not total:
+        return "no_engines"
+    if bad or sus:
+        return "flagged"
+    return "encrypted" if "encrypted" in (tags or ()) else "clean"
+
+
 def detection_summary(stats, results):
     bad, sus, total = counts(stats)
     lines = [f"<b>{bad}/{total}</b> engines say malicious" + (f", {sus} suspicious" if sus else "")]
@@ -331,6 +342,11 @@ class Quarantine:
                 if hold and path.exists():
                     self.held.add(path)
 
+    @staticmethod
+    def scanning(path, sha, note=""):
+        return Progress("Scanning on VirusTotal", f"{html.escape(path.name)} stays in quarantine until "
+                        f"the scan finishes{note}.", sha)
+
     def check(self, path):
         """Returns True if the file was left in quarantine for the user."""
         sig = signature(path)
@@ -340,9 +356,7 @@ class Quarantine:
 
         def queued():
             nonlocal progress
-            progress = Progress("Scanning on VirusTotal",
-                                f"{html.escape(path.name)} stays in quarantine until "
-                                "the scan finishes.", sha)
+            progress = self.scanning(path, sha)
 
         try:
             attrs = lookup(path.name, sha, queued)
@@ -368,9 +382,7 @@ class Quarantine:
                               "dialog-question", [("upload", "Upload")], report=False)
             if choice != "upload":
                 return choice
-        progress = Progress("Scanning on VirusTotal",
-                            f"{html.escape(path.name)} stays in quarantine until the scan "
-                            "finishes (usually a few minutes).", sha)
+        progress = self.scanning(path, sha, " (usually a few minutes)")
         try:
             stats, results, tags = upload(path, sha)
         finally:
@@ -379,26 +391,19 @@ class Quarantine:
 
     def verdict(self, path, sha, sig, stats, results, tags=None):
         log(verdict_line(path.name, stats, results))
-        bad, sus, total, body = detection_summary(stats, results)
-        if total == 0:
+        bad, _, total, body = detection_summary(stats, results)
+        name = html.escape(path.name)
+        kind = classify(stats, tags)
+        if kind == "no_engines":
             return self.no_verdict(path, sha, sig, "No engines could scan this file",
-                            f"{html.escape(path.name)} got no verdict from any engine.",
-                            "dialog-warning")
-        if bad == 0 and sus == 0 and "encrypted" in (tags or ()):
-            # Engines can't see inside a password-protected archive, so 0 detections
-            # means nothing; this is a common way to slip malware past scanners.
+                                   f"{name} got no verdict from any engine.", "dialog-warning")
+        if kind == "encrypted":  # a common way to slip malware past scanners
             return self.no_verdict(path, sha, sig, "Encrypted archive",
-                            f"{html.escape(path.name)} is password-protected, so VirusTotal "
-                            f"could not scan its contents (0/{total} means nothing here).",
-                            "dialog-warning")
-        if bad == 0 and sus == 0:
-            if signature(path) != sig:
-                # Written to since it was hashed: the verdict is for other contents.
-                log(f"{path.name} changed while being checked, checking again")
-                return False
-            dest = release(path)
-            tell_moved("Clean — moved to Downloads", f"{html.escape(path.name)} (0/{total} detections)", dest)
-            return False
+                                   f"{name} is password-protected, so VirusTotal could not scan its "
+                                   f"contents (0/{total} means nothing here).", "dialog-warning")
+        if kind == "clean":
+            return self.release_unchanged(path, sig, "Clean — moved to Downloads",
+                                          f"{name} (0/{total} detections)")
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
 
@@ -408,12 +413,18 @@ class Quarantine:
         a flagged file always warns, so a mis-click can't wave it through for good."""
         if not marked_safe(sha):
             return self.ask(path, sha, summary, body, icon, extra, report)
+        log(f"{path.name} was marked safe before")
+        return self.release_unchanged(path, sig, "Marked safe before — moved to Downloads",
+                                      html.escape(path.name))
+
+    @staticmethod
+    def release_unchanged(path, sig, summary, body):
+        """Move a cleared file to Downloads, unless it was written to since it was
+        hashed (the verdict is for other contents: the next scan checks it again)."""
         if signature(path) != sig:
             log(f"{path.name} changed while being checked, checking again")
-            return False
-        log(f"{path.name} was marked safe before")
-        dest = release(path)
-        tell_moved("Marked safe before — moved to Downloads", html.escape(path.name), dest)
+        else:
+            tell_moved(summary, body, release(path))
         return False
 
     def ask(self, *args, **kwargs):
