@@ -7,7 +7,7 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\vt-quarantine"
 SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.msi)
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
-UNIT_FILE = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "systemd" / "user" / "vt-quarantine.service"
+UNIT_FILE = xdg_config() / "systemd" / "user" / "vt-quarantine.service"
 UNIT_MARKER = "# Written by vt-quarantine --install"
 PACKAGED_UNIT = Path("/usr/lib/systemd/user/vt-quarantine.service")
 LAUNCH_AGENT_LABEL = "vt-quarantine"
@@ -30,6 +30,12 @@ def gui_python():
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         return pythonw if pythonw.exists() else Path(sys.executable)
     return MAC_PYTHON if MACOS and MAC_PYTHON.exists() else Path(sys.executable)
+
+
+def start_detached(cmd):
+    """Windows: start a program that outlives this one, with no console."""
+    subprocess.Popen(cmd, close_fds=True, cwd=str(DATA_DIR),
+                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
 
 def launchctl_bootout():
@@ -609,8 +615,7 @@ def autostart_windows(script):
         for name in ("NoModify", "NoRepair"):
             winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 1)
     stop_running()  # an older copy, so the new one can take over
-    subprocess.Popen([str(pythonw), str(script)], close_fds=True, cwd=str(DATA_DIR),
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    start_detached([str(pythonw), str(script)])
     return str(LOG_FILE)
 
 

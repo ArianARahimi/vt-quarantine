@@ -19,9 +19,36 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_context = ssl_context()
-vt_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context), NoRedirects)
-pypi_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context))
+# Release downloads redirect from github.com to these; nothing else is followed.
+UPDATE_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com"}
+
+
+def check_update_url(url, what):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
+        raise RuntimeError(f"{what} {parts.scheme}://{parts.hostname}")
+
+
+class GitHubRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check_update_url(newurl, "update download redirected to")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def make_openers(context):
+    """The HTTPS openers for VirusTotal, PyPI and GitHub, checking certificates with context."""
+    global vt_opener, pypi_opener, github_opener
+
+    def https():  # one each: a handler belongs to the opener it's added to
+        return urllib.request.HTTPSHandler(context=context)
+    vt_opener = urllib.request.build_opener(https(), NoRedirects)
+    pypi_opener = urllib.request.build_opener(https())
+    github_opener = urllib.request.build_opener(https(), GitHubRedirects)
+
+
+vt_opener = pypi_opener = github_opener = None
+make_openers(ssl_context())
 
 
 class Response:

@@ -4,9 +4,6 @@
 # --- Updates -----------------------------------------------------------------------
 
 REPO = "ArianARahimi/vt-quarantine"
-# Release downloads redirect from github.com to these; nothing else is followed.
-UPDATE_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
-                "release-assets.githubusercontent.com"}
 UPDATE_MAX_BYTES = 64 * 1024**2
 # Ed25519 keys whose signature on a release's SHA256SUMS makes it installable. The
 # private key stays on the maintainer's computer, so whoever controls the GitHub
@@ -86,41 +83,23 @@ def ed25519_verify(public, message, signature):
     return same(mul(s, base), add(r, mul(h, a)))
 
 
-class GitHubRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parts = urllib.parse.urlsplit(newurl)
-        if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
-            raise RuntimeError(f"update download redirected to {parts.scheme}://{parts.hostname}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context), GitHubRedirects)
-
-
 def use_system_tls():
     """Windows: check certificates the way Windows does (truststore), which fetches
     root certificates it doesn't have yet. Python's own check only sees the few a
     fresh Windows starts with, which can leave out VirusTotal's. Needs the pinned
     packages, so it's switched on once they're in."""
-    global vt_opener, pypi_opener, github_opener
     if not WINDOWS:
         return
     try:
         import truststore
-        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        make_openers(truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
     except Exception as e:
         log(f"can't check certificates through Windows ({e}), using Python's own list")
-        return
-    vt_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirects)
-    pypi_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
-    github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), GitHubRedirects)
 
 
 def github_get(url, limit=UPDATE_MAX_BYTES):
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
-        raise RuntimeError(f"refusing to fetch an update from {parts.scheme}://{parts.hostname}")
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
+    check_update_url(url, "refusing to fetch an update from")
+    req =urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
                                                "Accept": "application/vnd.github+json"})
     with github_opener.open(req, timeout=120) as resp:
         data = resp.read(limit + 1)
@@ -249,8 +228,7 @@ class Updater:
             pythonw = Path(sys.executable).with_name("pythonw.exe")
             steps = (f'start "" /wait "{SYSTEM32 / "msiexec.exe"}" /i "{msi}" /qn /norestart'
                      f' & start "" "{pythonw}" "{INSTALLED_SCRIPT}"')
-            subprocess.Popen(f'"{SYSTEM32 / "cmd.exe"}" /d /s /c "{steps}"', close_fds=True, cwd=str(DATA_DIR),
-                             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+            start_detached(f'"{SYSTEM32 / "cmd.exe"}" /d /s /c "{steps}"')
             log(f"installing version {v}")
             return
         else:
@@ -317,8 +295,7 @@ def restart(lock):
     script = str(Path(__file__).resolve())
     if WINDOWS:
         lock.close()  # so the new copy can take it
-        subprocess.Popen([sys.executable, script], close_fds=True, cwd=str(DATA_DIR),
-                         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+        start_detached([sys.executable, script])
         os._exit(0)
     # Same process, so systemd and launchd keep tracking it; the lock file
     # descriptor isn't inherited, so the new program takes the lock afresh.

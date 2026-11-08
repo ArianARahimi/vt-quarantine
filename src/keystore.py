@@ -12,14 +12,18 @@ class KeyStoreLocked(Exception):
     """The key is in a password store that's locked, and it wasn't unlocked."""
 
 
-class DpapiStore:
-    name = "Windows' protected storage"
+class LocalStore:
+    """A store that needs no connection: `with` does nothing."""
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         pass
+
+
+class DpapiStore(LocalStore):
+    name = "Windows' protected storage"
 
     @staticmethod
     def crypt(data, protect):
@@ -58,15 +62,9 @@ class DpapiStore:
         DPAPI_FILE.unlink(missing_ok=True)
 
 
-class KeychainStore:
+class KeychainStore(LocalStore):
     name = "the macOS Keychain"
     ITEM = ["-a", "vt-quarantine", "-s", "vt-quarantine"]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        pass
 
     def get(self):
         r = subprocess.run(["security", "find-generic-password", *self.ITEM, "-w"],
@@ -103,8 +101,7 @@ class SecretServiceStore:
         from jeepney.io.blocking import open_dbus_connection
         self.conn = open_dbus_connection("SESSION")
         try:
-            self.session = self.call("/org/freedesktop/secrets", "Service", "OpenSession", "sv",
-                                     ("plain", ("s", "")))[1]
+            self.session = self.service("OpenSession", "sv", ("plain", ("s", "")))[1]
         except Exception:
             self.conn.close()
             raise
@@ -120,6 +117,9 @@ class SecretServiceStore:
         return unwrap_msg(self.conn.send_and_get_reply(new_method_call(address, method, signature, body),
                                                        timeout=30))
 
+    def service(self, method, signature=None, body=()):
+        return self.call("/org/freedesktop/secrets", "Service", method, signature, body)
+
     def prompt(self, path):
         """Show the store's own prompt (to unlock it, say); False if it was closed."""
         if path == "/":
@@ -134,13 +134,12 @@ class SecretServiceStore:
         return not dismissed
 
     def unlock(self, paths):
-        _unlocked, prompt = self.call("/org/freedesktop/secrets", "Service", "Unlock", "ao", (paths,))
+        _unlocked, prompt = self.service("Unlock", "ao", (paths,))
         if not self.prompt(prompt):
             raise KeyStoreLocked("the password store stayed locked")
 
     def items(self):
-        unlocked, locked = self.call("/org/freedesktop/secrets", "Service", "SearchItems", "a{ss}",
-                                     (self.ATTRIBUTES,))
+        unlocked, locked = self.service("SearchItems", "a{ss}", (self.ATTRIBUTES,))
         if locked:
             self.unlock(locked)
         return list(unlocked) + list(locked)
@@ -149,12 +148,11 @@ class SecretServiceStore:
         items = self.items()
         if not items:
             return ""
-        secrets = self.call("/org/freedesktop/secrets", "Service", "GetSecrets", "aoo",
-                            (items[:1], self.session))[0]
+        secrets = self.service("GetSecrets", "aoo", (items[:1], self.session))[0]
         return bytes(secrets[items[0]][2]).decode().strip()
 
     def put(self, key):
-        collection = self.call("/org/freedesktop/secrets", "Service", "ReadAlias", "s", ("default",))[0]
+        collection = self.service("ReadAlias", "s", ("default",))[0]
         if collection == "/":
             raise OSError("there's no default keyring")
         self.unlock([collection])
@@ -207,6 +205,14 @@ def write_plain_key(key):
         os.chmod(KEY_FILE, 0o600)
 
 
+def move_into(store, key):
+    """Put the key in an open store; once it reads back the same, drop the plain file."""
+    store.put(key)
+    if store.get() != key:
+        raise OSError("it didn't read back the same")
+    KEY_FILE.unlink(missing_ok=True)
+
+
 def read_key():
     """The saved API key ("" if there's none). A key found in the plain file is moved
     into the password store. Raises KeyStoreLocked if the store stayed locked."""
@@ -218,10 +224,8 @@ def read_key():
         with store:
             if not plain:
                 return store.get()
-            store.put(plain)
-            if store.get() == plain:
-                KEY_FILE.unlink(missing_ok=True)
-                log(f"moved the API key into {store.name}")
+            move_into(store, plain)
+            log(f"moved the API key into {store.name}")
             return plain
     except KeyStoreLocked:
         if plain:
@@ -245,21 +249,15 @@ def key_status():
 
 def save_key(key):
     """Keep the key in the password store (or the plain file); returns where it went."""
-    store = key_store()
+    store, where = key_store(), None
     if store is not None:
         try:
             with store:
-                store.put(key)
-                if store.get() == key:
-                    KEY_FILE.unlink(missing_ok=True)
-                    where = store.name
-                else:
-                    raise OSError("it didn't read back the same")
+                move_into(store, key)
+            where = store.name
         except Exception as e:
             log(f"could not use {store.name}: {e}")
-            write_plain_key(key)
-            where = str(KEY_FILE)
-    else:
+    if where is None:
         write_plain_key(key)
         where = str(KEY_FILE)
     KEY_CHANGED.parent.mkdir(parents=True, exist_ok=True)

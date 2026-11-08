@@ -196,6 +196,10 @@ def known_folder(guid, fallback):
     return fallback
 
 
+def xdg_config():  # Linux; looked up each time (HOME can change in tests)
+    return env_dir("XDG_CONFIG_HOME", HOME / ".config")
+
+
 if WINDOWS:
     HOME = known_folder("5E6C858F-0E22-4760-9AFE-EA3317B67173", HOME)  # FOLDERID_Profile
     CONFIG_DIR = known_folder("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D",  # FOLDERID_RoamingAppData
@@ -205,7 +209,7 @@ if WINDOWS:
 elif MACOS:
     CONFIG_DIR = DATA_DIR = HOME / "Library" / "Application Support" / "vt-quarantine"
 else:
-    CONFIG_DIR = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "vt-quarantine"
+    CONFIG_DIR = xdg_config() / "vt-quarantine"
     DATA_DIR = env_dir("XDG_DATA_HOME", HOME / ".local" / "share") / "vt-quarantine"
 
 
@@ -215,7 +219,7 @@ def downloads_dir():
         # FOLDERID_Downloads; Explorer lets users move this folder anywhere.
         return known_folder("374DE290-123F-4565-9164-39C4925E467B", HOME / "Downloads")
     if not MACOS:
-        user_dirs = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "user-dirs.dirs"
+        user_dirs = xdg_config() / "user-dirs.dirs"
         try:
             m = re.search(r'^XDG_DOWNLOAD_DIR="([^"]*)"', user_dirs.read_text(), re.M)
         except (OSError, UnicodeDecodeError):
@@ -289,9 +293,36 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_context = ssl_context()
-vt_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context), NoRedirects)
-pypi_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context))
+# Release downloads redirect from github.com to these; nothing else is followed.
+UPDATE_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com"}
+
+
+def check_update_url(url, what):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
+        raise RuntimeError(f"{what} {parts.scheme}://{parts.hostname}")
+
+
+class GitHubRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check_update_url(newurl, "update download redirected to")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def make_openers(context):
+    """The HTTPS openers for VirusTotal, PyPI and GitHub, checking certificates with context."""
+    global vt_opener, pypi_opener, github_opener
+
+    def https():  # one each: a handler belongs to the opener it's added to
+        return urllib.request.HTTPSHandler(context=context)
+    vt_opener = urllib.request.build_opener(https(), NoRedirects)
+    pypi_opener = urllib.request.build_opener(https())
+    github_opener = urllib.request.build_opener(https(), GitHubRedirects)
+
+
+vt_opener = pypi_opener = github_opener = None
+make_openers(ssl_context())
 
 
 class Response:
@@ -544,6 +575,9 @@ def open_url(url):
         log(f"could not open {url}: {e}")
 
 
+FAILED = object()  # try_show(): the notification couldn't be shown
+
+
 class Notifier:
     """Common front end. Backends implement _show() and close().
 
@@ -563,10 +597,8 @@ class Notifier:
                 choice.append(key)
             done.set()
 
-        try:
-            handle = self._show(summary, body, urgency, icon, actions, expire, on_event if actions else None)
-        except Exception as e:
-            log(f"could not show notification {summary!r}: {e}")
+        handle = self.try_show(summary, body, urgency, icon, actions, expire, on_event if actions else None)
+        if handle is FAILED:
             return None
         if not actions:
             return ""
@@ -590,12 +622,8 @@ class Notifier:
         def on_event(key):
             if key and on_action:
                 on_action(key)
-        try:
-            handle = self._show(summary, body, "low", icon, actions, expire, on_event if actions else None)
-        except Exception as e:
-            log(f"could not show notification {summary!r}: {e}")
-            return
-        if actions:
+        handle = self.try_show(summary, body, "low", icon, actions, expire, on_event if actions else None)
+        if actions and handle is not FAILED:
             # Don't hold on to notes that are never answered: let go of each after
             # two minutes (checked whenever another one is shown).
             lock = self.__dict__.setdefault("_told_lock", threading.Lock())
@@ -614,11 +642,16 @@ class Notifier:
         def on_event(key):
             if key:
                 on_action(key)
+        handle = self.try_show(summary, body, "normal", icon, actions, 0, on_event)
+        return None if handle is FAILED else handle
+
+    def try_show(self, summary, *args):
+        """_show(), or FAILED (logged) if the notification couldn't be shown."""
         try:
-            return self._show(summary, body, "normal", icon, actions, 0, on_event)
+            return self._show(summary, *args)
         except Exception as e:
             log(f"could not show notification {summary!r}: {e}")
-            return None
+            return FAILED
 
 
 class FreedesktopNotifier(Notifier):
@@ -1635,9 +1668,6 @@ class Quarantine:
 # --- Updates -----------------------------------------------------------------------
 
 REPO = "ArianARahimi/vt-quarantine"
-# Release downloads redirect from github.com to these; nothing else is followed.
-UPDATE_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
-                "release-assets.githubusercontent.com"}
 UPDATE_MAX_BYTES = 64 * 1024**2
 # Ed25519 keys whose signature on a release's SHA256SUMS makes it installable. The
 # private key stays on the maintainer's computer, so whoever controls the GitHub
@@ -1717,41 +1747,23 @@ def ed25519_verify(public, message, signature):
     return same(mul(s, base), add(r, mul(h, a)))
 
 
-class GitHubRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parts = urllib.parse.urlsplit(newurl)
-        if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
-            raise RuntimeError(f"update download redirected to {parts.scheme}://{parts.hostname}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_context), GitHubRedirects)
-
-
 def use_system_tls():
     """Windows: check certificates the way Windows does (truststore), which fetches
     root certificates it doesn't have yet. Python's own check only sees the few a
     fresh Windows starts with, which can leave out VirusTotal's. Needs the pinned
     packages, so it's switched on once they're in."""
-    global vt_opener, pypi_opener, github_opener
     if not WINDOWS:
         return
     try:
         import truststore
-        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        make_openers(truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
     except Exception as e:
         log(f"can't check certificates through Windows ({e}), using Python's own list")
-        return
-    vt_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirects)
-    pypi_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
-    github_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), GitHubRedirects)
 
 
 def github_get(url, limit=UPDATE_MAX_BYTES):
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname not in UPDATE_HOSTS:
-        raise RuntimeError(f"refusing to fetch an update from {parts.scheme}://{parts.hostname}")
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
+    check_update_url(url, "refusing to fetch an update from")
+    req =urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
                                                "Accept": "application/vnd.github+json"})
     with github_opener.open(req, timeout=120) as resp:
         data = resp.read(limit + 1)
@@ -1880,8 +1892,7 @@ class Updater:
             pythonw = Path(sys.executable).with_name("pythonw.exe")
             steps = (f'start "" /wait "{SYSTEM32 / "msiexec.exe"}" /i "{msi}" /qn /norestart'
                      f' & start "" "{pythonw}" "{INSTALLED_SCRIPT}"')
-            subprocess.Popen(f'"{SYSTEM32 / "cmd.exe"}" /d /s /c "{steps}"', close_fds=True, cwd=str(DATA_DIR),
-                             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+            start_detached(f'"{SYSTEM32 / "cmd.exe"}" /d /s /c "{steps}"')
             log(f"installing version {v}")
             return
         else:
@@ -1948,8 +1959,7 @@ def restart(lock):
     script = str(Path(__file__).resolve())
     if WINDOWS:
         lock.close()  # so the new copy can take it
-        subprocess.Popen([sys.executable, script], close_fds=True, cwd=str(DATA_DIR),
-                         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+        start_detached([sys.executable, script])
         os._exit(0)
     # Same process, so systemd and launchd keep tracking it; the lock file
     # descriptor isn't inherited, so the new program takes the lock afresh.
@@ -2013,7 +2023,7 @@ def firefox_profile_roots():
                 ("LibreWolf", base / "librewolf"), ("Floorp", base / "Floorp")]
     flatpak = HOME / ".var" / "app"
     return [("Firefox", HOME / ".mozilla" / "firefox"),
-            ("Firefox", env_dir("XDG_CONFIG_HOME", HOME / ".config") / "mozilla" / "firefox"),
+            ("Firefox", xdg_config() / "mozilla" / "firefox"),
             ("Firefox", HOME / "snap" / "firefox" / "common" / ".mozilla" / "firefox"),
             ("Firefox", flatpak / "org.mozilla.firefox" / ".mozilla" / "firefox"),
             ("Waterfox", HOME / ".waterfox"),
@@ -2239,7 +2249,7 @@ def chromium_roots():
                 ("Chromium", base / "Chromium"), ("Brave", base / "BraveSoftware" / "Brave-Browser"),
                 ("Vivaldi", base / "Vivaldi"), ("Opera", base / "com.operasoftware.Opera"),
                 ("Opera GX", base / "com.operasoftware.OperaGX")]
-    config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
+    config = xdg_config()
     flatpak = HOME / ".var" / "app"
     return [("Chrome", config / "google-chrome"), ("Chrome", config / "google-chrome-beta"),
             ("Chrome", config / "google-chrome-unstable"), ("Chromium", config / "chromium"),
@@ -2842,14 +2852,18 @@ class KeyStoreLocked(Exception):
     """The key is in a password store that's locked, and it wasn't unlocked."""
 
 
-class DpapiStore:
-    name = "Windows' protected storage"
+class LocalStore:
+    """A store that needs no connection: `with` does nothing."""
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         pass
+
+
+class DpapiStore(LocalStore):
+    name = "Windows' protected storage"
 
     @staticmethod
     def crypt(data, protect):
@@ -2888,15 +2902,9 @@ class DpapiStore:
         DPAPI_FILE.unlink(missing_ok=True)
 
 
-class KeychainStore:
+class KeychainStore(LocalStore):
     name = "the macOS Keychain"
     ITEM = ["-a", "vt-quarantine", "-s", "vt-quarantine"]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        pass
 
     def get(self):
         r = subprocess.run(["security", "find-generic-password", *self.ITEM, "-w"],
@@ -2933,8 +2941,7 @@ class SecretServiceStore:
         from jeepney.io.blocking import open_dbus_connection
         self.conn = open_dbus_connection("SESSION")
         try:
-            self.session = self.call("/org/freedesktop/secrets", "Service", "OpenSession", "sv",
-                                     ("plain", ("s", "")))[1]
+            self.session = self.service("OpenSession", "sv", ("plain", ("s", "")))[1]
         except Exception:
             self.conn.close()
             raise
@@ -2950,6 +2957,9 @@ class SecretServiceStore:
         return unwrap_msg(self.conn.send_and_get_reply(new_method_call(address, method, signature, body),
                                                        timeout=30))
 
+    def service(self, method, signature=None, body=()):
+        return self.call("/org/freedesktop/secrets", "Service", method, signature, body)
+
     def prompt(self, path):
         """Show the store's own prompt (to unlock it, say); False if it was closed."""
         if path == "/":
@@ -2964,13 +2974,12 @@ class SecretServiceStore:
         return not dismissed
 
     def unlock(self, paths):
-        _unlocked, prompt = self.call("/org/freedesktop/secrets", "Service", "Unlock", "ao", (paths,))
+        _unlocked, prompt = self.service("Unlock", "ao", (paths,))
         if not self.prompt(prompt):
             raise KeyStoreLocked("the password store stayed locked")
 
     def items(self):
-        unlocked, locked = self.call("/org/freedesktop/secrets", "Service", "SearchItems", "a{ss}",
-                                     (self.ATTRIBUTES,))
+        unlocked, locked = self.service("SearchItems", "a{ss}", (self.ATTRIBUTES,))
         if locked:
             self.unlock(locked)
         return list(unlocked) + list(locked)
@@ -2979,12 +2988,11 @@ class SecretServiceStore:
         items = self.items()
         if not items:
             return ""
-        secrets = self.call("/org/freedesktop/secrets", "Service", "GetSecrets", "aoo",
-                            (items[:1], self.session))[0]
+        secrets = self.service("GetSecrets", "aoo", (items[:1], self.session))[0]
         return bytes(secrets[items[0]][2]).decode().strip()
 
     def put(self, key):
-        collection = self.call("/org/freedesktop/secrets", "Service", "ReadAlias", "s", ("default",))[0]
+        collection = self.service("ReadAlias", "s", ("default",))[0]
         if collection == "/":
             raise OSError("there's no default keyring")
         self.unlock([collection])
@@ -3037,6 +3045,14 @@ def write_plain_key(key):
         os.chmod(KEY_FILE, 0o600)
 
 
+def move_into(store, key):
+    """Put the key in an open store; once it reads back the same, drop the plain file."""
+    store.put(key)
+    if store.get() != key:
+        raise OSError("it didn't read back the same")
+    KEY_FILE.unlink(missing_ok=True)
+
+
 def read_key():
     """The saved API key ("" if there's none). A key found in the plain file is moved
     into the password store. Raises KeyStoreLocked if the store stayed locked."""
@@ -3048,10 +3064,8 @@ def read_key():
         with store:
             if not plain:
                 return store.get()
-            store.put(plain)
-            if store.get() == plain:
-                KEY_FILE.unlink(missing_ok=True)
-                log(f"moved the API key into {store.name}")
+            move_into(store, plain)
+            log(f"moved the API key into {store.name}")
             return plain
     except KeyStoreLocked:
         if plain:
@@ -3075,21 +3089,15 @@ def key_status():
 
 def save_key(key):
     """Keep the key in the password store (or the plain file); returns where it went."""
-    store = key_store()
+    store, where = key_store(), None
     if store is not None:
         try:
             with store:
-                store.put(key)
-                if store.get() == key:
-                    KEY_FILE.unlink(missing_ok=True)
-                    where = store.name
-                else:
-                    raise OSError("it didn't read back the same")
+                move_into(store, key)
+            where = store.name
         except Exception as e:
             log(f"could not use {store.name}: {e}")
-            write_plain_key(key)
-            where = str(KEY_FILE)
-    else:
+    if where is None:
         write_plain_key(key)
         where = str(KEY_FILE)
     KEY_CHANGED.parent.mkdir(parents=True, exist_ok=True)
@@ -3161,7 +3169,7 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\vt-quarantine"
 SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.msi)
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
-UNIT_FILE = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "systemd" / "user" / "vt-quarantine.service"
+UNIT_FILE = xdg_config() / "systemd" / "user" / "vt-quarantine.service"
 UNIT_MARKER = "# Written by vt-quarantine --install"
 PACKAGED_UNIT = Path("/usr/lib/systemd/user/vt-quarantine.service")
 LAUNCH_AGENT_LABEL = "vt-quarantine"
@@ -3184,6 +3192,12 @@ def gui_python():
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         return pythonw if pythonw.exists() else Path(sys.executable)
     return MAC_PYTHON if MACOS and MAC_PYTHON.exists() else Path(sys.executable)
+
+
+def start_detached(cmd):
+    """Windows: start a program that outlives this one, with no console."""
+    subprocess.Popen(cmd, close_fds=True, cwd=str(DATA_DIR),
+                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
 
 def launchctl_bootout():
@@ -3763,8 +3777,7 @@ def autostart_windows(script):
         for name in ("NoModify", "NoRepair"):
             winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 1)
     stop_running()  # an older copy, so the new one can take over
-    subprocess.Popen([str(pythonw), str(script)], close_fds=True, cwd=str(DATA_DIR),
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    start_detached([str(pythonw), str(script)])
     return str(LOG_FILE)
 
 

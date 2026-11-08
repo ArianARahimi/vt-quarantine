@@ -196,6 +196,10 @@ def known_folder(guid, fallback):
     return fallback
 
 
+def xdg_config():  # Linux; looked up each time (HOME can change in tests)
+    return env_dir("XDG_CONFIG_HOME", HOME / ".config")
+
+
 if WINDOWS:
     HOME = known_folder("5E6C858F-0E22-4760-9AFE-EA3317B67173", HOME)  # FOLDERID_Profile
     CONFIG_DIR = known_folder("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D",  # FOLDERID_RoamingAppData
@@ -205,7 +209,7 @@ if WINDOWS:
 elif MACOS:
     CONFIG_DIR = DATA_DIR = HOME / "Library" / "Application Support" / "vt-quarantine"
 else:
-    CONFIG_DIR = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "vt-quarantine"
+    CONFIG_DIR = xdg_config() / "vt-quarantine"
     DATA_DIR = env_dir("XDG_DATA_HOME", HOME / ".local" / "share") / "vt-quarantine"
 
 
@@ -215,7 +219,7 @@ def downloads_dir():
         # FOLDERID_Downloads; Explorer lets users move this folder anywhere.
         return known_folder("374DE290-123F-4565-9164-39C4925E467B", HOME / "Downloads")
     if not MACOS:
-        user_dirs = env_dir("XDG_CONFIG_HOME", HOME / ".config") / "user-dirs.dirs"
+        user_dirs = xdg_config() / "user-dirs.dirs"
         try:
             m = re.search(r'^XDG_DOWNLOAD_DIR="([^"]*)"', user_dirs.read_text(), re.M)
         except (OSError, UnicodeDecodeError):

@@ -30,7 +30,7 @@ def firefox_profile_roots():
                 ("LibreWolf", base / "librewolf"), ("Floorp", base / "Floorp")]
     flatpak = HOME / ".var" / "app"
     return [("Firefox", HOME / ".mozilla" / "firefox"),
-            ("Firefox", env_dir("XDG_CONFIG_HOME", HOME / ".config") / "mozilla" / "firefox"),
+            ("Firefox", xdg_config() / "mozilla" / "firefox"),
             ("Firefox", HOME / "snap" / "firefox" / "common" / ".mozilla" / "firefox"),
             ("Firefox", flatpak / "org.mozilla.firefox" / ".mozilla" / "firefox"),
             ("Waterfox", HOME / ".waterfox"),
@@ -256,7 +256,7 @@ def chromium_roots():
                 ("Chromium", base / "Chromium"), ("Brave", base / "BraveSoftware" / "Brave-Browser"),
                 ("Vivaldi", base / "Vivaldi"), ("Opera", base / "com.operasoftware.Opera"),
                 ("Opera GX", base / "com.operasoftware.OperaGX")]
-    config = env_dir("XDG_CONFIG_HOME", HOME / ".config")
+    config = xdg_config()
     flatpak = HOME / ".var" / "app"
     return [("Chrome", config / "google-chrome"), ("Chrome", config / "google-chrome-beta"),
             ("Chrome", config / "google-chrome-unstable"), ("Chromium", config / "chromium"),

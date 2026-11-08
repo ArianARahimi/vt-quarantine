@@ -33,6 +33,9 @@ def open_url(url):
         log(f"could not open {url}: {e}")
 
 
+FAILED = object()  # try_show(): the notification couldn't be shown
+
+
 class Notifier:
     """Common front end. Backends implement _show() and close().
 
@@ -52,10 +55,8 @@ class Notifier:
                 choice.append(key)
             done.set()
 
-        try:
-            handle = self._show(summary, body, urgency, icon, actions, expire, on_event if actions else None)
-        except Exception as e:
-            log(f"could not show notification {summary!r}: {e}")
+        handle = self.try_show(summary, body, urgency, icon, actions, expire, on_event if actions else None)
+        if handle is FAILED:
             return None
         if not actions:
             return ""
@@ -79,12 +80,8 @@ class Notifier:
         def on_event(key):
             if key and on_action:
                 on_action(key)
-        try:
-            handle = self._show(summary, body, "low", icon, actions, expire, on_event if actions else None)
-        except Exception as e:
-            log(f"could not show notification {summary!r}: {e}")
-            return
-        if actions:
+        handle = self.try_show(summary, body, "low", icon, actions, expire, on_event if actions else None)
+        if actions and handle is not FAILED:
             # Don't hold on to notes that are never answered: let go of each after
             # two minutes (checked whenever another one is shown).
             lock = self.__dict__.setdefault("_told_lock", threading.Lock())
@@ -103,11 +100,16 @@ class Notifier:
         def on_event(key):
             if key:
                 on_action(key)
+        handle = self.try_show(summary, body, "normal", icon, actions, 0, on_event)
+        return None if handle is FAILED else handle
+
+    def try_show(self, summary, *args):
+        """_show(), or FAILED (logged) if the notification couldn't be shown."""
         try:
-            return self._show(summary, body, "normal", icon, actions, 0, on_event)
+            return self._show(summary, *args)
         except Exception as e:
             log(f"could not show notification {summary!r}: {e}")
-            return None
+            return FAILED
 
 
 class FreedesktopNotifier(Notifier):
