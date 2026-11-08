@@ -349,3 +349,73 @@ def make_notifier():
 
 
 notifier = None  # set in run()
+
+
+def windows_clipboard(text):
+    """Put text on the Windows clipboard (Win32, no helper program)."""
+    import ctypes
+    from ctypes import wintypes as w
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.CreateWindowExW.restype = w.HWND
+    user32.CreateWindowExW.argtypes = (w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
+    user32.DestroyWindow.argtypes = user32.OpenClipboard.argtypes = (w.HWND,)
+    user32.SetClipboardData.restype = w.HANDLE
+    user32.SetClipboardData.argtypes = (w.UINT, w.HANDLE)
+    kernel32.GlobalAlloc.restype = w.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = (w.UINT, ctypes.c_size_t)
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = (w.HGLOBAL,)
+    data = text.encode("utf-16-le") + b"\0\0"
+    # The clipboard needs an owner window, or what's put there may be refused: a
+    # hidden message-only one.
+    window = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, w.HWND(-3), None, None, None)
+    try:
+        for _ in range(20):  # another program may hold the clipboard for a moment
+            if user32.OpenClipboard(window):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+        try:
+            user32.EmptyClipboard()
+            memory = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+            if not memory:
+                return False
+            ctypes.memmove(kernel32.GlobalLock(memory), data, len(data))
+            kernel32.GlobalUnlock(memory)
+            if not user32.SetClipboardData(13, memory):  # CF_UNICODETEXT; the system owns it once set
+                kernel32.GlobalFree(memory)
+                return False
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if window:
+            user32.DestroyWindow(window)
+
+
+def copy_to_clipboard(text):
+    """True if the text is now on the clipboard."""
+    try:
+        if WINDOWS:
+            return windows_clipboard(text)
+        if MACOS:
+            return subprocess.run(["pbcopy"], input=text.encode(), capture_output=True,
+                                  timeout=10).returncode == 0
+        # These keep running to hold the text, so don't wait on their output.
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            if shutil.which(cmd[0]):
+                return subprocess.run(cmd, input=text.encode(), stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+        from jeepney import DBusAddress, MessageType, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+        klipper = DBusAddress("/klipper", bus_name="org.kde.klipper", interface="org.kde.klipper.klipper")
+        with open_dbus_connection("SESSION") as conn:
+            reply = conn.send_and_get_reply(new_method_call(klipper, "setClipboardContents", "s", (text,)),
+                                            timeout=10)
+        return reply.header.message_type == MessageType.method_return
+    except Exception as e:
+        log(f"could not copy to the clipboard: {e}")
+        return False

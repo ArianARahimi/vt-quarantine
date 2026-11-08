@@ -342,3 +342,12 @@ def set_auto_update(state):
     if update_kind() is None:
         print("(This copy doesn't update itself: it's a development checkout or wasn't set up "
               "with --install or an installer.)")
+
+
+def tell_updated():
+    if QUIET_UPDATES.exists():
+        return
+    # After waiting out a fullscreen window, make sure it's seen.
+    urgency = "normal" if wait_for_free_screen("the update note") else "low"
+    notifier.notify(f"vt-quarantine updated to {VERSION}", "", urgency, "system-software-update",
+                    expire=6000)

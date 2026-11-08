@@ -294,3 +294,32 @@ def key_changed():
     changed = stamp != _key_seen or KEY_FILE.exists()
     _key_seen = stamp
     return changed
+
+
+def startup_key():
+    """The API key at startup. If it's in a password store that stays locked, say so
+    (rather than "no key") and offer to unlock it again."""
+    while True:
+        try:
+            return read_key()
+        except KeyStoreLocked:
+            log("the password store holding the API key stayed locked")
+            wait_for_free_screen("the unlock question")
+            choice = notifier.notify("Your VirusTotal API key is locked away",
+                                     "It's in your password store, which stayed locked. Downloads stay "
+                                     "quarantined until it's unlocked.", "critical", "dialog-password",
+                                     [("unlock", "Unlock")])
+            if choice != "unlock":
+                # Closed: ask again only when it's needed, when something is downloaded.
+                wait_for_download()
+
+
+def wait_for_download():
+    """Until something new lands in the quarantine folder."""
+    def present():
+        with contextlib.suppress(OSError), os.scandir(QUARANTINE) as entries:
+            return {e.name for e in entries if is_candidate(e.name)}
+        return set()
+    before = present()
+    while not present() - before:
+        time.sleep(POLL_SECONDS)

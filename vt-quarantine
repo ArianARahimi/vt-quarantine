@@ -862,6 +862,76 @@ def make_notifier():
 notifier = None  # set in run()
 
 
+def windows_clipboard(text):
+    """Put text on the Windows clipboard (Win32, no helper program)."""
+    import ctypes
+    from ctypes import wintypes as w
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.CreateWindowExW.restype = w.HWND
+    user32.CreateWindowExW.argtypes = (w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
+    user32.DestroyWindow.argtypes = user32.OpenClipboard.argtypes = (w.HWND,)
+    user32.SetClipboardData.restype = w.HANDLE
+    user32.SetClipboardData.argtypes = (w.UINT, w.HANDLE)
+    kernel32.GlobalAlloc.restype = w.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = (w.UINT, ctypes.c_size_t)
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = (w.HGLOBAL,)
+    data = text.encode("utf-16-le") + b"\0\0"
+    # The clipboard needs an owner window, or what's put there may be refused: a
+    # hidden message-only one.
+    window = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, w.HWND(-3), None, None, None)
+    try:
+        for _ in range(20):  # another program may hold the clipboard for a moment
+            if user32.OpenClipboard(window):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+        try:
+            user32.EmptyClipboard()
+            memory = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+            if not memory:
+                return False
+            ctypes.memmove(kernel32.GlobalLock(memory), data, len(data))
+            kernel32.GlobalUnlock(memory)
+            if not user32.SetClipboardData(13, memory):  # CF_UNICODETEXT; the system owns it once set
+                kernel32.GlobalFree(memory)
+                return False
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if window:
+            user32.DestroyWindow(window)
+
+
+def copy_to_clipboard(text):
+    """True if the text is now on the clipboard."""
+    try:
+        if WINDOWS:
+            return windows_clipboard(text)
+        if MACOS:
+            return subprocess.run(["pbcopy"], input=text.encode(), capture_output=True,
+                                  timeout=10).returncode == 0
+        # These keep running to hold the text, so don't wait on their output.
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            if shutil.which(cmd[0]):
+                return subprocess.run(cmd, input=text.encode(), stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+        from jeepney import DBusAddress, MessageType, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+        klipper = DBusAddress("/klipper", bus_name="org.kde.klipper", interface="org.kde.klipper.klipper")
+        with open_dbus_connection("SESSION") as conn:
+            reply = conn.send_and_get_reply(new_method_call(klipper, "setClipboardContents", "s", (text,)),
+                                            timeout=10)
+        return reply.header.message_type == MessageType.method_return
+    except Exception as e:
+        log(f"could not copy to the clipboard: {e}")
+        return False
+
+
 # --- VirusTotal ------------------------------------------------------------------
 
 class RateLimiter:
@@ -1894,10 +1964,20 @@ def set_auto_update(state):
               "with --install or an installer.)")
 
 
+def tell_updated():
+    if QUIET_UPDATES.exists():
+        return
+    # After waiting out a fullscreen window, make sure it's seen.
+    urgency = "normal" if wait_for_free_screen("the update note") else "low"
+    notifier.notify(f"vt-quarantine updated to {VERSION}", "", urgency, "system-software-update",
+                    expire=6000)
+
+
 # --- Browser setup -----------------------------------------------------------------
-# On the first run, the default browser is pointed at the quarantine folder: through
-# each profile's user.js if it's Firefox-based. Others can't be set up safely from
-# outside, so a notification tells how. --uninstall puts the profiles back as they were.
+# Every browser profile found is pointed at the quarantine folder: Firefox-based ones
+# through user.js, Chromium-based ones through their Preferences file (while closed),
+# Safari through `defaults`. A default browser that can't be set up gets a notification
+# telling how. --uninstall puts everything back as it was.
 
 BROWSER_SETUP = CONFIG_DIR / "browser-setup.json"  # what the browser setup changed
 USER_JS_BEGIN = "// vt-quarantine: begin (vt-quarantine --uninstall removes this)"
@@ -1968,13 +2048,36 @@ def js_string(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def same_path(value):
+    """Is this (a str) the quarantine folder?"""
+    return isinstance(value, str) and os.path.normcase(os.path.normpath(value)) == \
+        os.path.normcase(os.path.normpath(str(QUARANTINE)))
+
+
 def is_quarantine(value):
+    """Is this pref value (a JS string) the quarantine folder?"""
     try:
-        path = json.loads(value)
+        return same_path(json.loads(value))
     except (TypeError, ValueError):
         return False
-    return isinstance(path, str) and os.path.normcase(os.path.normpath(path)) == \
-        os.path.normcase(os.path.normpath(str(QUARANTINE)))
+
+
+def write_json(path, data):
+    tmp = path.with_name(path.name + ".vtq-new")
+    tmp.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_handlers(folder):
+    """A Firefox-based profile's handlers.json as a dict ({} if missing or empty)."""
+    try:
+        text = (folder / "handlers.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    data = json.loads(text) if text.strip() else {}  # empty: no file types set yet
+    if not isinstance(data, dict):
+        raise ValueError("handlers.json isn't an object")
+    return data
 
 
 def setup_firefox_profile(folder):
@@ -2026,21 +2129,39 @@ def profile_in_use(folder):
         return True
 
 
+def firefox_auto_open_off(folder):
+    """Firefox-based: file types set to open in an app without asking ("Always open
+    similar files") are saved instead, since they'd open before they're checked.
+    Returns {type: its handler before} for those changed. Only while it's closed."""
+    data = read_handlers(folder)
+    changed = {}
+    types = data.get("mimeTypes")
+    for mime, handler in (types.items() if isinstance(types, dict) else ()):
+        # 2: a chosen app, 4: the system's default app; 3 (in the browser) is left.
+        if isinstance(handler, dict) and handler.get("action") in (2, 4) and not handler.get("ask"):
+            changed[mime] = dict(handler)
+            handler["action"] = 0  # save
+    if changed:
+        write_json(folder / "handlers.json", data)
+    return changed
+
+
 def undo_firefox_handlers(folder, before):
     """Put back the file handlers firefox_auto_open_off() changed, where they're
     still "save" (only with the browser closed: it keeps its own copy)."""
     if not before or profile_in_use(folder):
         return
-    handlers = folder / "handlers.json"
     try:
-        data = json.loads(handlers.read_text(encoding="utf-8"))
+        data = read_handlers(folder)
     except (OSError, ValueError):
         return
-    types = data.get("mimeTypes", {})
+    types = data.get("mimeTypes")
+    if not isinstance(types, dict):
+        return
     for mime, handler in before.items():
         if isinstance(types.get(mime), dict) and types[mime].get("action") == 0:
             types[mime] = handler
-    write_json(handlers, data)
+    write_json(folder / "handlers.json", data)
 
 
 def undo_firefox_profile(folder, before):
@@ -2085,8 +2206,6 @@ def undo_firefox_profile(folder, before):
     user_js.write_text(text + "\n".join([USER_JS_RESTORE, *restore]) + "\n", encoding="utf-8")
 
 
-# Keywords in what the system names its default browser (a .desktop file on Linux, a
-# ProgId on Windows, a bundle id on macOS), most specific first.
 def chromium_roots():
     """(browser, user data folder) for the Chromium-based browsers set up from outside
     (Opera keeps its own in the roaming part of AppData)."""
@@ -2141,6 +2260,8 @@ def chromium_profiles():
     return found
 
 
+# Edge on Windows: its Startup boost keeps it running with no window, so it's
+# ended (only then) to change its settings.
 def windows_processes():
     """Windows: {pid: (exe name, parent pid)} of every running process."""
     import ctypes
@@ -2214,6 +2335,15 @@ def end_edge_in_background():
     return True
 
 
+def wait_closed(root, seconds=10):
+    """Wait for a browser that was just ended to let go of its lock."""
+    for _ in range(int(seconds / 0.2)):
+        if not chromium_running(root):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def mark_clean_exit(prefs):
     """After ending Edge that way: its profile says it quit normally, so it doesn't
     offer to restore pages it never showed."""
@@ -2223,6 +2353,15 @@ def mark_clean_exit(prefs):
         profile["exit_type"] = "Normal"
         profile["exited_cleanly"] = True
         write_json(prefs, data)
+
+
+def edge_on_windows(browser):
+    return WINDOWS and browser == "Edge"
+
+
+def end_edge(root):
+    """Edge never closes for good (Startup boost): end it while it has no window."""
+    return end_edge_in_background() and wait_closed(root)
 
 
 def flatpak_app(folder):
@@ -2277,24 +2416,18 @@ CHROMIUM_PREFS = ("download.default_directory", "download.directory_upgrade",
                   "savefile.default_directory")
 
 
-def same_path(value):
-    return isinstance(value, str) and os.path.normcase(os.path.normpath(value)) == \
-        os.path.normcase(os.path.normpath(str(QUARANTINE)))
-
-
-def write_json(path, data):
-    tmp = path.with_name(path.name + ".vtq-new")
-    tmp.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def chromium_points_here(prefs):
+def chromium_download(prefs):
+    """The "download" section of a Chromium Preferences file ({} if unreadable)."""
     try:
         data = json.loads(prefs.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
-    download = data.get("download")
-    return isinstance(download, dict) and same_path(download.get("default_directory"))
+        return {}
+    download = data.get("download") if isinstance(data, dict) else None
+    return download if isinstance(download, dict) else {}
+
+
+def chromium_points_here(prefs):
+    return same_path(chromium_download(prefs).get("default_directory"))
 
 
 def setup_chromium_profile(prefs):
@@ -2325,21 +2458,8 @@ def setup_chromium_profile(prefs):
     return before
 
 
-def wait_closed(root, seconds=10):
-    """Wait for a browser that was just ended to let go of its lock."""
-    for _ in range(int(seconds / 0.2)):
-        if not chromium_running(root):
-            return True
-        time.sleep(0.2)
-    return False
-
-
 def chromium_wants_auto_open(prefs):
-    try:
-        download = json.loads(prefs.read_text(encoding="utf-8")).get("download")
-    except (OSError, ValueError, AttributeError):
-        return False
-    return isinstance(download, dict) and bool(download.get("extensions_to_open"))
+    return bool(chromium_download(prefs).get("extensions_to_open"))
 
 
 def chromium_auto_open_off(prefs):
@@ -2352,30 +2472,6 @@ def chromium_auto_open_off(prefs):
     download["extensions_to_open"] = ""
     write_json(prefs, data)
     return True
-
-
-def firefox_auto_open_off(folder):
-    """Firefox-based: file types set to open in an app without asking ("Always open
-    similar files") are saved instead, since they'd open before they're checked.
-    Returns {type: its handler before} for those changed. Only while it's closed."""
-    handlers = folder / "handlers.json"
-    try:
-        text = handlers.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    if not text.strip():
-        return {}  # empty: no file types set yet
-    data = json.loads(text)
-    changed = {}
-    types = data.get("mimeTypes") if isinstance(data, dict) else None
-    for mime, handler in (types.items() if isinstance(types, dict) else ()):
-        # 2: a chosen app, 4: the system's default app; 3 (in the browser) is left.
-        if isinstance(handler, dict) and handler.get("action") in (2, 4) and not handler.get("ask"):
-            changed[mime] = dict(handler)
-            handler["action"] = 0  # save
-    if changed:
-        write_json(handlers, data)
-    return changed
 
 
 def undo_chromium_profile(prefs, before):
@@ -2439,6 +2535,8 @@ def undo_safari(before):
     safari_set("AutoOpenSafeDownloads", before.get("AutoOpenSafeDownloads"))
 
 
+# Keywords in what the system names its default browser (a .desktop file on Linux, a
+# ProgId on Windows, a bundle id on macOS), most specific first.
 BROWSER_NAMES = (("waterfox", "Waterfox"), ("librewolf", "LibreWolf"), ("floorp", "Floorp"),
                  ("firefox", "Firefox"), ("chromium", "Chromium"), ("chrome", "Chrome"),
                  ("brave", "Brave"), ("edge", "Edge"), ("vivaldi", "Vivaldi"), ("operagx", "Opera GX"),
@@ -2482,76 +2580,6 @@ def default_browser():
     return next((name for key, name in BROWSER_NAMES if key in ident), None)
 
 
-def windows_clipboard(text):
-    """Put text on the Windows clipboard (Win32, no helper program)."""
-    import ctypes
-    from ctypes import wintypes as w
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    user32.CreateWindowExW.restype = w.HWND
-    user32.CreateWindowExW.argtypes = (w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, ctypes.c_int, ctypes.c_int,
-                                       ctypes.c_int, ctypes.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
-    user32.DestroyWindow.argtypes = user32.OpenClipboard.argtypes = (w.HWND,)
-    user32.SetClipboardData.restype = w.HANDLE
-    user32.SetClipboardData.argtypes = (w.UINT, w.HANDLE)
-    kernel32.GlobalAlloc.restype = w.HGLOBAL
-    kernel32.GlobalAlloc.argtypes = (w.UINT, ctypes.c_size_t)
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = (w.HGLOBAL,)
-    data = text.encode("utf-16-le") + b"\0\0"
-    # The clipboard needs an owner window, or what's put there may be refused: a
-    # hidden message-only one.
-    window = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, w.HWND(-3), None, None, None)
-    try:
-        for _ in range(20):  # another program may hold the clipboard for a moment
-            if user32.OpenClipboard(window):
-                break
-            time.sleep(0.05)
-        else:
-            return False
-        try:
-            user32.EmptyClipboard()
-            memory = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-            if not memory:
-                return False
-            ctypes.memmove(kernel32.GlobalLock(memory), data, len(data))
-            kernel32.GlobalUnlock(memory)
-            if not user32.SetClipboardData(13, memory):  # CF_UNICODETEXT; the system owns it once set
-                kernel32.GlobalFree(memory)
-                return False
-            return True
-        finally:
-            user32.CloseClipboard()
-    finally:
-        if window:
-            user32.DestroyWindow(window)
-
-
-def copy_to_clipboard(text):
-    """True if the text is now on the clipboard."""
-    try:
-        if WINDOWS:
-            return windows_clipboard(text)
-        if MACOS:
-            return subprocess.run(["pbcopy"], input=text.encode(), capture_output=True,
-                                  timeout=10).returncode == 0
-        # These keep running to hold the text, so don't wait on their output.
-        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
-            if shutil.which(cmd[0]):
-                return subprocess.run(cmd, input=text.encode(), stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL, timeout=10).returncode == 0
-        from jeepney import DBusAddress, MessageType, new_method_call
-        from jeepney.io.blocking import open_dbus_connection
-        klipper = DBusAddress("/klipper", bus_name="org.kde.klipper", interface="org.kde.klipper.klipper")
-        with open_dbus_connection("SESSION") as conn:
-            reply = conn.send_and_get_reply(new_method_call(klipper, "setClipboardContents", "s", (text,)),
-                                            timeout=10)
-        return reply.header.message_type == MessageType.method_return
-    except Exception as e:
-        log(f"could not copy to the clipboard: {e}")
-        return False
-
-
 def names(items):
     """"Chrome", "Chrome and Brave", "Chrome, Brave and Firefox"."""
     items = list(dict.fromkeys(items))
@@ -2592,15 +2620,6 @@ def safari_pass(record, set_up, waiting, covered):
             log("Safari: safe downloads no longer open by themselves")
     except (OSError, ValueError, subprocess.CalledProcessError) as e:
         log(f"could not set up Safari: {e}")
-
-
-def edge_on_windows(browser):
-    return WINDOWS and browser == "Edge"
-
-
-def end_edge(root):
-    """Edge never closes for good (Startup boost): end it while it has no window."""
-    return end_edge_in_background() and wait_closed(root)
 
 
 def setup_new_firefox(record, set_up, waiting, covered):
@@ -2729,44 +2748,6 @@ def ask_to_set_folder(browser):
             notifier.notify("Couldn't copy the folder", f"Type it in instead:\n<b>{folder}</b>",
                             "normal", "dialog-warning")
         return
-
-
-def startup_key():
-    """The API key at startup. If it's in a password store that stays locked, say so
-    (rather than "no key") and offer to unlock it again."""
-    while True:
-        try:
-            return read_key()
-        except KeyStoreLocked:
-            log("the password store holding the API key stayed locked")
-            wait_for_free_screen("the unlock question")
-            choice = notifier.notify("Your VirusTotal API key is locked away",
-                                     "It's in your password store, which stayed locked. Downloads stay "
-                                     "quarantined until it's unlocked.", "critical", "dialog-password",
-                                     [("unlock", "Unlock")])
-            if choice != "unlock":
-                # Closed: ask again only when it's needed, when something is downloaded.
-                wait_for_download()
-
-
-def wait_for_download():
-    """Until something new lands in the quarantine folder."""
-    def present():
-        with contextlib.suppress(OSError), os.scandir(QUARANTINE) as entries:
-            return {e.name for e in entries if is_candidate(e.name)}
-        return set()
-    before = present()
-    while not present() - before:
-        time.sleep(POLL_SECONDS)
-
-
-def tell_updated():
-    if QUIET_UPDATES.exists():
-        return
-    # After waiting out a fullscreen window, make sure it's seen.
-    urgency = "normal" if wait_for_free_screen("the update note") else "low"
-    notifier.notify(f"vt-quarantine updated to {VERSION}", "", urgency, "system-software-update",
-                    expire=6000)
 
 
 def watch_browsers():
@@ -3132,6 +3113,35 @@ def key_changed():
     changed = stamp != _key_seen or KEY_FILE.exists()
     _key_seen = stamp
     return changed
+
+
+def startup_key():
+    """The API key at startup. If it's in a password store that stays locked, say so
+    (rather than "no key") and offer to unlock it again."""
+    while True:
+        try:
+            return read_key()
+        except KeyStoreLocked:
+            log("the password store holding the API key stayed locked")
+            wait_for_free_screen("the unlock question")
+            choice = notifier.notify("Your VirusTotal API key is locked away",
+                                     "It's in your password store, which stayed locked. Downloads stay "
+                                     "quarantined until it's unlocked.", "critical", "dialog-password",
+                                     [("unlock", "Unlock")])
+            if choice != "unlock":
+                # Closed: ask again only when it's needed, when something is downloaded.
+                wait_for_download()
+
+
+def wait_for_download():
+    """Until something new lands in the quarantine folder."""
+    def present():
+        with contextlib.suppress(OSError), os.scandir(QUARANTINE) as entries:
+            return {e.name for e in entries if is_candidate(e.name)}
+        return set()
+    before = present()
+    while not present() - before:
+        time.sleep(POLL_SECONDS)
 
 
 # --- Setup commands --------------------------------------------------------------
