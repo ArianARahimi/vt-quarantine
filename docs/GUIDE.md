@@ -68,6 +68,10 @@ up its SHA-256 hash on VirusTotal:
 | ❔ Unknown program, script or installer | Uploaded to VirusTotal for a scan, then handled as above |
 | ❔ Unknown document, archive, disk image, … | Asks first: **Upload**, **Delete** or **Mark as safe** (see [Privacy](#privacy-and-security)) |
 
+A clean verdict more than 30 days old is checked again first: VirusTotal doesn't
+rescan files by itself, and engines may have learned about the file since. If
+that rescan fails or takes over 5 minutes, the old verdict counts.
+
 While VirusTotal scans a file, which can take a few minutes, a "Scanning on
 VirusTotal" notification stays up. A file that changes after it was checked is
 checked again, and a file whose check fails (no connection, API limit used up)
@@ -171,7 +175,9 @@ vt-quarantine -S, --scan PATH...       check files, or the files in a folder, an
 vt-quarantine -I, --install            set up, ask for the API key, start at sign-in
 vt-quarantine -U, --uninstall          stop, undo the browser setup, forget everything
 vt-quarantine -K, --set-key            save or replace the API key
-vt-quarantine -C, --check              fetch missing packages and check notifications
+    --json                             with --scan: print the results as JSON
+vt-quarantine -C, --check              fetch missing packages, show how much of the
+                                       API quota is used, and check notifications
 vt-quarantine -T, --test-notification  show a test notification with buttons
 vt-quarantine -A, --auto-update off    stop checking for updates (on: start again;
                                        quiet: update without a notification)
@@ -184,7 +190,10 @@ uploaded to VirusTotal; other unknown files only after you answer yes (uploads c
 be downloaded by VT subscribers). It exits with 0 if every file is clean, 1 if any
 is flagged, and 2 otherwise (unknown, no verdict or an error), so scripts can use
 it. Subfolders aren't scanned. It shares the free API's 4 lookups a minute with the
-running program.
+running program. With `--json`, stdout is a JSON list with one entry per file
+(`path`, `verdict`: `clean`, `flagged` or `no_verdict`, and when there is one,
+`reason`, `sha256`, `malicious`, `engines`, `flagged_by` and `report`); progress
+goes to stderr.
 
 On Windows, run these with the program's own Python in a Command Prompt, for
 example to change the API key or to troubleshoot:

@@ -41,7 +41,7 @@ def vt(method, url, upload=None):
     hosts = (VT_HOST, VT_UPLOAD_HOST) if upload else (VT_HOST,)  # big files upload elsewhere
     if parts.scheme != "https" or parts.hostname not in hosts:
         raise RuntimeError(f"refusing to send the API key to {parts.scheme}://{parts.hostname}")
-    for _ in range(6):
+    for attempt in range(6):
         limiter.wait()
         if upload:
             with open_nofollow(upload) as f:
@@ -50,9 +50,54 @@ def vt(method, url, upload=None):
             r = http_request(method, url)
         if r.status_code != 429:
             return r
+        if attempt == 0 and (used_up := quota_used_up()):
+            raise RuntimeError(used_up)  # waiting a minute won't help
         log("rate limited, waiting a minute")
         time.sleep(60)
     raise RuntimeError("VirusTotal quota exceeded (daily limit is 500 requests)")
+
+
+def quotas():
+    """{"daily": (used, allowed), "monthly": ...} for this API key's requests;
+    raises if VirusTotal won't say."""
+    limiter.wait()
+    r = http_request("GET", f"{API}/users/{urllib.parse.quote(api_key, safe='')}/overall_quotas")
+    r.raise_for_status()
+    data = r.json()["data"]
+    found = {}
+    for period in ("daily", "monthly"):
+        user = data.get(f"api_requests_{period}", {}).get("user") or {}
+        if isinstance(user.get("used"), int) and isinstance(user.get("allowed"), int):
+            found[period] = (user["used"], user["allowed"])
+    return found
+
+
+def quota_used_up():
+    """What to say if the daily or monthly allowance is spent, else None."""
+    try:
+        found = quotas()
+    except Exception as e:
+        log(f"couldn't check the quota: {e}")
+        return None
+    used, allowed = found.get("daily", (0, 1))
+    if used >= allowed:
+        left = 86400 - int(time.time()) % 86400
+        return (f"VirusTotal's daily limit is used up ({used}/{allowed} requests). It resets "
+                f"at midnight UTC, in {left // 3600} h {left % 3600 // 60} min.")
+    used, allowed = found.get("monthly", (0, 1))
+    if used >= allowed:
+        return f"VirusTotal's monthly limit is used up ({used}/{allowed} requests)."
+    return None
+
+
+def quota_line():
+    """For --check: today's and this month's requests so far."""
+    try:
+        found = quotas()
+    except Exception as e:
+        return f"couldn't check ({e})"
+    parts = [f"{u}/{a} {'today' if p == 'daily' else 'this month'}" for p, (u, a) in found.items()]
+    return ", ".join(parts) or "VirusTotal didn't say"
 
 
 def report_url(sha):

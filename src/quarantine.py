@@ -223,13 +223,54 @@ def lookup(name, sha, queued=None):
         attrs = r.json()["data"]["attributes"]
         # A file still queued on VT has all-zero stats and no analysis date.
         if attrs.get("last_analysis_date"):
-            return attrs
+            return refreshed(name, sha, attrs, queued)
         if queued:
             log(f"{name} is known to VT but not analysed yet, waiting")
             queued()
             queued = None
         time.sleep(QUEUED_RECHECK_SECONDS)
     raise RuntimeError("VirusTotal has no finished analysis yet")
+
+
+def refreshed(name, sha, attrs, queued=None):
+    """attrs, with a fresh analysis if the verdict is clean but old: VT doesn't rescan
+    by itself, and engines may have learned about the file since. If the rescan
+    fails or is slow, the old verdict stands."""
+    days = int((time.time() - attrs["last_analysis_date"]) // 86400)
+    bad, sus, total = counts(attrs["last_analysis_stats"])
+    if days < STALE_DAYS or bad or sus or not total:
+        return attrs
+    log(f"{name}: VirusTotal's verdict is {days} days old, asking for a rescan")
+    if queued:
+        queued()
+    try:
+        r = vt("POST", f"/files/{sha}/analyse")
+        r.raise_for_status()
+        stats, results = wait_analysis(r.json()["data"]["id"], name, RESCAN_TIMEOUT)
+    except Exception as e:
+        log(f"rescan of {name} failed ({e}), using the {days}-day-old verdict")
+        return attrs
+    return {**attrs, "last_analysis_stats": stats, "last_analysis_results": results}
+
+
+def wait_analysis(analysis, name, timeout=ANALYSIS_TIMEOUT):
+    """Wait for an analysis (upload or rescan) to finish: (stats, results)."""
+    deadline = time.monotonic() + timeout
+    status = None
+    while time.monotonic() < deadline:
+        time.sleep(ANALYSIS_POLL_SECONDS)
+        r = vt("GET", f"/analyses/{analysis}")
+        if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
+            log(f"analysis of {name}: not listed yet")
+            continue
+        r.raise_for_status()
+        attrs = r.json()["data"]["attributes"]
+        if attrs["status"] != status:
+            status = attrs["status"]
+            log(f"analysis of {name}: {status}")
+        if attrs["status"] == "completed":
+            return attrs["stats"], attrs.get("results")
+    raise RuntimeError("VirusTotal analysis timed out")
 
 
 def upload(path, sha):
@@ -242,27 +283,12 @@ def upload(path, sha):
         url = r.json()["data"]
     r = vt("POST", url, upload=path)
     r.raise_for_status()
-    analysis = r.json()["data"]["id"]
     log(f"uploaded {path.name}, waiting for analysis")
-    deadline = time.monotonic() + ANALYSIS_TIMEOUT
-    status = None
-    while time.monotonic() < deadline:
-        time.sleep(ANALYSIS_POLL_SECONDS)
-        r = vt("GET", f"/analyses/{analysis}")
-        if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
-            log(f"analysis of {path.name}: not listed yet")
-            continue
-        r.raise_for_status()
-        attrs = r.json()["data"]["attributes"]
-        if attrs["status"] != status:
-            status = attrs["status"]
-            log(f"analysis of {path.name}: {status}")
-        if attrs["status"] == "completed":
-            # The analysis object has no tags; the file object says if it is encrypted.
-            r = vt("GET", f"/files/{sha}")
-            r.raise_for_status()
-            return attrs["stats"], attrs.get("results"), r.json()["data"]["attributes"].get("tags")
-    raise RuntimeError("VirusTotal analysis timed out")
+    stats, results = wait_analysis(r.json()["data"]["id"], path.name)
+    # The analysis object has no tags; the file object says if it is encrypted.
+    r = vt("GET", f"/files/{sha}")
+    r.raise_for_status()
+    return stats, results, r.json()["data"]["attributes"].get("tags")
 
 
 class Quarantine:

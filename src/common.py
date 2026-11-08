@@ -64,6 +64,8 @@ REQUESTS_PER_MINUTE = 4          # free public API limit
 DIRECT_UPLOAD_MAX = 32 * 1024**2  # larger files need an upload URL
 UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
+STALE_DAYS = 30           # a clean verdict older than this gets a rescan first
+RESCAN_TIMEOUT = 5 * 60   # after that, the old verdict stands
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be

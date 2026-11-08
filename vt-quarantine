@@ -64,6 +64,8 @@ REQUESTS_PER_MINUTE = 4          # free public API limit
 DIRECT_UPLOAD_MAX = 32 * 1024**2  # larger files need an upload URL
 UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
+STALE_DAYS = 30           # a clean verdict older than this gets a rescan first
+RESCAN_TIMEOUT = 5 * 60   # after that, the old verdict stands
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be
@@ -900,7 +902,7 @@ def vt(method, url, upload=None):
     hosts = (VT_HOST, VT_UPLOAD_HOST) if upload else (VT_HOST,)  # big files upload elsewhere
     if parts.scheme != "https" or parts.hostname not in hosts:
         raise RuntimeError(f"refusing to send the API key to {parts.scheme}://{parts.hostname}")
-    for _ in range(6):
+    for attempt in range(6):
         limiter.wait()
         if upload:
             with open_nofollow(upload) as f:
@@ -909,9 +911,54 @@ def vt(method, url, upload=None):
             r = http_request(method, url)
         if r.status_code != 429:
             return r
+        if attempt == 0 and (used_up := quota_used_up()):
+            raise RuntimeError(used_up)  # waiting a minute won't help
         log("rate limited, waiting a minute")
         time.sleep(60)
     raise RuntimeError("VirusTotal quota exceeded (daily limit is 500 requests)")
+
+
+def quotas():
+    """{"daily": (used, allowed), "monthly": ...} for this API key's requests;
+    raises if VirusTotal won't say."""
+    limiter.wait()
+    r = http_request("GET", f"{API}/users/{urllib.parse.quote(api_key, safe='')}/overall_quotas")
+    r.raise_for_status()
+    data = r.json()["data"]
+    found = {}
+    for period in ("daily", "monthly"):
+        user = data.get(f"api_requests_{period}", {}).get("user") or {}
+        if isinstance(user.get("used"), int) and isinstance(user.get("allowed"), int):
+            found[period] = (user["used"], user["allowed"])
+    return found
+
+
+def quota_used_up():
+    """What to say if the daily or monthly allowance is spent, else None."""
+    try:
+        found = quotas()
+    except Exception as e:
+        log(f"couldn't check the quota: {e}")
+        return None
+    used, allowed = found.get("daily", (0, 1))
+    if used >= allowed:
+        left = 86400 - int(time.time()) % 86400
+        return (f"VirusTotal's daily limit is used up ({used}/{allowed} requests). It resets "
+                f"at midnight UTC, in {left // 3600} h {left % 3600 // 60} min.")
+    used, allowed = found.get("monthly", (0, 1))
+    if used >= allowed:
+        return f"VirusTotal's monthly limit is used up ({used}/{allowed} requests)."
+    return None
+
+
+def quota_line():
+    """For --check: today's and this month's requests so far."""
+    try:
+        found = quotas()
+    except Exception as e:
+        return f"couldn't check ({e})"
+    parts = [f"{u}/{a} {'today' if p == 'daily' else 'this month'}" for p, (u, a) in found.items()]
+    return ", ".join(parts) or "VirusTotal didn't say"
 
 
 def report_url(sha):
@@ -1253,13 +1300,54 @@ def lookup(name, sha, queued=None):
         attrs = r.json()["data"]["attributes"]
         # A file still queued on VT has all-zero stats and no analysis date.
         if attrs.get("last_analysis_date"):
-            return attrs
+            return refreshed(name, sha, attrs, queued)
         if queued:
             log(f"{name} is known to VT but not analysed yet, waiting")
             queued()
             queued = None
         time.sleep(QUEUED_RECHECK_SECONDS)
     raise RuntimeError("VirusTotal has no finished analysis yet")
+
+
+def refreshed(name, sha, attrs, queued=None):
+    """attrs, with a fresh analysis if the verdict is clean but old: VT doesn't rescan
+    by itself, and engines may have learned about the file since. If the rescan
+    fails or is slow, the old verdict stands."""
+    days = int((time.time() - attrs["last_analysis_date"]) // 86400)
+    bad, sus, total = counts(attrs["last_analysis_stats"])
+    if days < STALE_DAYS or bad or sus or not total:
+        return attrs
+    log(f"{name}: VirusTotal's verdict is {days} days old, asking for a rescan")
+    if queued:
+        queued()
+    try:
+        r = vt("POST", f"/files/{sha}/analyse")
+        r.raise_for_status()
+        stats, results = wait_analysis(r.json()["data"]["id"], name, RESCAN_TIMEOUT)
+    except Exception as e:
+        log(f"rescan of {name} failed ({e}), using the {days}-day-old verdict")
+        return attrs
+    return {**attrs, "last_analysis_stats": stats, "last_analysis_results": results}
+
+
+def wait_analysis(analysis, name, timeout=ANALYSIS_TIMEOUT):
+    """Wait for an analysis (upload or rescan) to finish: (stats, results)."""
+    deadline = time.monotonic() + timeout
+    status = None
+    while time.monotonic() < deadline:
+        time.sleep(ANALYSIS_POLL_SECONDS)
+        r = vt("GET", f"/analyses/{analysis}")
+        if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
+            log(f"analysis of {name}: not listed yet")
+            continue
+        r.raise_for_status()
+        attrs = r.json()["data"]["attributes"]
+        if attrs["status"] != status:
+            status = attrs["status"]
+            log(f"analysis of {name}: {status}")
+        if attrs["status"] == "completed":
+            return attrs["stats"], attrs.get("results")
+    raise RuntimeError("VirusTotal analysis timed out")
 
 
 def upload(path, sha):
@@ -1272,27 +1360,12 @@ def upload(path, sha):
         url = r.json()["data"]
     r = vt("POST", url, upload=path)
     r.raise_for_status()
-    analysis = r.json()["data"]["id"]
     log(f"uploaded {path.name}, waiting for analysis")
-    deadline = time.monotonic() + ANALYSIS_TIMEOUT
-    status = None
-    while time.monotonic() < deadline:
-        time.sleep(ANALYSIS_POLL_SECONDS)
-        r = vt("GET", f"/analyses/{analysis}")
-        if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
-            log(f"analysis of {path.name}: not listed yet")
-            continue
-        r.raise_for_status()
-        attrs = r.json()["data"]["attributes"]
-        if attrs["status"] != status:
-            status = attrs["status"]
-            log(f"analysis of {path.name}: {status}")
-        if attrs["status"] == "completed":
-            # The analysis object has no tags; the file object says if it is encrypted.
-            r = vt("GET", f"/files/{sha}")
-            r.raise_for_status()
-            return attrs["stats"], attrs.get("results"), r.json()["data"]["attributes"].get("tags")
-    raise RuntimeError("VirusTotal analysis timed out")
+    stats, results = wait_analysis(r.json()["data"]["id"], path.name)
+    # The analysis object has no tags; the file object says if it is encrypted.
+    r = vt("GET", f"/files/{sha}")
+    r.raise_for_status()
+    return stats, results, r.json()["data"]["attributes"].get("tags")
 
 
 class Quarantine:
@@ -3819,6 +3892,11 @@ def check():
           f"packages folder:   {lib_dir() if pinned_wheels() else '(none needed)'}")
     if not install_requirements():
         return 1
+    global api_key
+    with contextlib.suppress(KeyStoreLocked):
+        api_key = read_key()
+    if api_key:  # informational: a failed check doesn't fail --check
+        print(f"VirusTotal requests: {quota_line()}")
     try:
         make_notifier()
     except Exception as e:
@@ -3844,7 +3922,8 @@ def test_notification():
 # moved, locked or deleted. Same rule as for downloads: unknown programs are uploaded,
 # other unknown files only after a yes.
 
-SCAN_CLEAN, SCAN_FLAGGED, SCAN_NO_VERDICT = 0, 1, 2  # also the exit codes
+SCAN_CODES = {"clean": 0, "flagged": 1, "no_verdict": 2}  # also the exit codes
+scan_out = sys.stdout  # where progress goes: stderr with --json, so stdout is only JSON
 
 
 def plain(text):
@@ -3852,8 +3931,12 @@ def plain(text):
     return "".join(c if c.isprintable() else "?" for c in str(text))
 
 
+def scan_note(msg):
+    print(plain(msg), file=scan_out, flush=True)
+
+
 def scan_log(msg):
-    print("  " + plain(msg), flush=True)
+    scan_note("  " + msg)
 
 
 def scan_targets(targets):
@@ -3872,83 +3955,106 @@ def scan_targets(targets):
 def confirm_upload():
     if not sys.stdin or not sys.stdin.isatty():
         return False
-    answer = input("  Unknown to VirusTotal. Upload it? Uploaded files can be downloaded "
-                   "by VT subscribers. [y/N] ")
-    return answer.strip().lower() in ("y", "yes")
+    print("  Unknown to VirusTotal. Upload it? Uploaded files can be downloaded "
+          "by VT subscribers. [y/N] ", end="", file=sys.stderr, flush=True)
+    return input().strip().lower() in ("y", "yes")
 
 
 def scan_file(path):
-    """Check one file and print what VirusTotal says; returns a SCAN_ code."""
-    print(plain(path), flush=True)
+    """Check one file: what VirusTotal says, as --json prints it."""
     if not path.exists():
-        print("  not found")
-        return SCAN_NO_VERDICT
+        return {"verdict": "no_verdict", "reason": "not_found"}
     if path.is_symlink() or not path.is_file():
-        print("  skipped: not a regular file")
-        return SCAN_NO_VERDICT
+        return {"verdict": "no_verdict", "reason": "not_a_file"}
     sha = sha256(path)
+    size = path.stat().st_size
+    result = {"sha256": sha, "size": size}
     attrs = lookup(path.name, sha, lambda: None)
     if attrs is None:
-        size = path.stat().st_size
         if size > UPLOAD_MAX:
-            print(f"  NOT ON VIRUSTOTAL, and too large to upload ({size // 1024**2} MB)")
-            return SCAN_NO_VERDICT
+            return {**result, "verdict": "no_verdict", "reason": "too_large"}
         if not should_auto_upload(path) and not confirm_upload():
-            print("  NOT ON VIRUSTOTAL (not uploaded)")
-            return SCAN_NO_VERDICT
+            return {**result, "verdict": "no_verdict", "reason": "not_uploaded"}
         stats, results, tags = upload(path, sha)
     else:
         stats, results, tags = (attrs["last_analysis_stats"], attrs.get("last_analysis_results"),
                                 attrs.get("tags"))
     bad, sus, total = counts(stats)
+    result.update(malicious=bad, suspicious=sus, engines=total,
+                  flagged_by=dict(flagged_by(results)), report=report_url(sha))
     if total == 0:
-        print("  NO VERDICT: no engine could scan it")
-        code = SCAN_NO_VERDICT
-    elif bad or sus:
-        print(f"  FLAGGED: {bad}/{total} malicious" + (f", {sus} suspicious" if sus else ""))
-        for eng, label in flagged_by(results):
+        return {**result, "verdict": "no_verdict", "reason": "no_engines"}
+    if bad or sus:
+        return {**result, "verdict": "flagged"}
+    if "encrypted" in (tags or ()):
+        return {**result, "verdict": "no_verdict", "reason": "encrypted"}
+    return {**result, "verdict": "clean"}
+
+
+def print_result(r):
+    """The text form of a scan_file() result (the file name is already printed)."""
+    reason = r.get("reason")
+    if r["verdict"] == "clean":
+        print(f"  clean: 0/{r['engines']}")
+    elif r["verdict"] == "flagged":
+        print(f"  FLAGGED: {r['malicious']}/{r['engines']} malicious"
+              + (f", {r['suspicious']} suspicious" if r["suspicious"] else ""))
+        for eng, label in r["flagged_by"].items():
             print(f"    {plain(eng)}: {plain(label)}")
-        code = SCAN_FLAGGED
-    elif "encrypted" in (tags or ()):
-        print(f"  NO VERDICT: password-protected, so its contents weren't scanned "
-              f"(0/{total} means nothing here)")
-        code = SCAN_NO_VERDICT
     else:
-        print(f"  clean: 0/{total}")
-        code = SCAN_CLEAN
-    print(f"  report: {report_url(sha)}")
-    return code
+        print({
+            "not_found": "  not found",
+            "not_a_file": "  skipped: not a regular file",
+            "too_large": f"  NOT ON VIRUSTOTAL, and too large to upload ({r.get('size', 0) // 1024**2} MB)",
+            "not_uploaded": "  NOT ON VIRUSTOTAL (not uploaded)",
+            "no_engines": "  NO VERDICT: no engine could scan it",
+            "encrypted": f"  NO VERDICT: password-protected, so its contents weren't scanned "
+                         f"(0/{r.get('engines')} means nothing here)",
+            "error": f"  error: {plain(r.get('error'))}",
+        }[reason])
+    if "report" in r:
+        print(f"  report: {r['report']}")
 
 
-def scan(targets):
+def scan(targets, as_json=False):
     """--scan: 0 if every file is clean, 1 if any is flagged, else 2 (unknown, no
     verdict or an error)."""
-    global api_key, log
+    global api_key, log, scan_out
+    scan_out = sys.stderr if as_json else sys.stdout
+    log = scan_note  # e.g. packages being fetched: never on stdout with --json
     files = scan_targets(targets)
     if not files:
-        print("Nothing to scan.")
-        return SCAN_NO_VERDICT
+        print("Nothing to scan.", file=scan_out)
+        if as_json:
+            print("[]")
+        return SCAN_CODES["no_verdict"]
     if not install_requirements():
-        return SCAN_NO_VERDICT
+        return SCAN_CODES["no_verdict"]
     try:
         api_key = read_key()
     except KeyStoreLocked:
-        print("The API key is in a locked password store: unlock it and try again.")
-        return SCAN_NO_VERDICT
+        print("The API key is in a locked password store: unlock it and try again.", file=scan_out)
+        return SCAN_CODES["no_verdict"]
     if not api_key:
-        print("No VirusTotal API key: save one with vt-quarantine --set-key first.")
-        return SCAN_NO_VERDICT
+        print("No VirusTotal API key: save one with vt-quarantine --set-key first.", file=scan_out)
+        return SCAN_CODES["no_verdict"]
     log = scan_log  # progress (uploading, rate limit) under the file it's about
-    codes = set()
+    results = []
     for i, path in enumerate(files):
         if i:
-            print()
+            print(file=scan_out)
+        print(plain(path), file=scan_out, flush=True)
         try:
-            codes.add(scan_file(path))
+            r = scan_file(path)
         except Exception as e:
-            print(f"  error: {plain(e)}")
-            codes.add(SCAN_NO_VERDICT)
-    return SCAN_FLAGGED if SCAN_FLAGGED in codes else max(codes)
+            r = {"verdict": "no_verdict", "reason": "error", "error": str(e)}
+        if not as_json:
+            print_result(r)
+        results.append({"path": str(path), **r})
+    if as_json:
+        print(json.dumps(results, indent=2))
+    codes = {SCAN_CODES[r["verdict"]] for r in results}
+    return SCAN_CODES["flagged"] if SCAN_CODES["flagged"] in codes else max(codes)
 
 
 # --- Main --------------------------------------------------------------------
@@ -4045,6 +4151,8 @@ def main():
     group.add_argument("-S", "--scan", nargs="+", metavar="PATH",
                        help="check files, or the files in a folder, on VirusTotal and print the "
                             "verdicts (nothing is moved); exit code 0 clean, 1 flagged, 2 no verdict")
+    parser.add_argument("--json", action="store_true",
+                        help="with --scan: print the results as JSON (progress goes to stderr)")
     group.add_argument("-I", "--install", action="store_true",
                        help="set everything up and start at sign-in (asks for the API key if needed)")
     group.add_argument("-U", "--uninstall", action="store_true",
@@ -4060,7 +4168,8 @@ def main():
     group.add_argument("--key-window", action="store_true",
                        help=argparse.SUPPRESS)  # Windows: the "Enter key" notification's window
     group.add_argument("-C", "--check", action="store_true",
-                       help="download missing packages and check that notifications work")
+                       help="download missing packages, show how much of the API quota is "
+                            "used and check that notifications work")
     group.add_argument("-T", "--test-notification", action="store_true",
                        help="show a notification with buttons and print which one you pick")
     group.add_argument("-F", "--forget-safe", action="store_true",
@@ -4069,8 +4178,10 @@ def main():
                        help="daily update check: on (the default), quiet (no notification "
                             "after updating) or off")
     args = parser.parse_args()
+    if args.json and not args.scan:
+        parser.error("--json only goes with --scan")
     if args.scan:
-        return scan(args.scan)
+        return scan(args.scan, args.json)
     if args.install:
         return install()
     if args.install_app:

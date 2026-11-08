@@ -767,6 +767,11 @@ def check():
           f"packages folder:   {lib_dir() if pinned_wheels() else '(none needed)'}")
     if not install_requirements():
         return 1
+    global api_key
+    with contextlib.suppress(KeyStoreLocked):
+        api_key = read_key()
+    if api_key:  # informational: a failed check doesn't fail --check
+        print(f"VirusTotal requests: {quota_line()}")
     try:
         make_notifier()
     except Exception as e:

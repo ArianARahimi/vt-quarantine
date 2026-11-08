@@ -104,7 +104,12 @@ deleted. Files left in quarantine are unlocked, never deleted.
 - **Programs already running as you are out of scope.** They can write to the
   quarantine folder or change vt-quarantine itself.
 - **The free API allows 4 lookups a minute and 500 a day.** vt-quarantine paces
-  itself; if the quota runs out, files wait in quarantine.
+  itself; if the daily quota runs out, files wait in quarantine and the
+  notification says when it resets. `vt-quarantine --check` shows how much is
+  used. Not tested with a real used-up quota (only against a stand-in).
+- **Old clean verdicts are rescanned first,** which makes those downloads wait
+  a minute or two longer. Tested with `--scan` against the real VirusTotal; the
+  "Scanning on VirusTotal" notification for it only in the tests.
 - **Waiting for fullscreen apps works on Windows, KDE Plasma and X11 desktops.**
   GNOME on Wayland and macOS give programs no way to tell.
 </details>
