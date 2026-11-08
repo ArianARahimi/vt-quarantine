@@ -24,7 +24,8 @@ def scan_log(msg):
 
 
 def scan_targets(targets):
-    """Each file given, and the files directly inside each folder given."""
+    """Each file given (a symlink named here is followed), and the files directly
+    inside each folder given (symlinks there are skipped)."""
     files = []
     for target in targets:
         path = Path(target).expanduser()
@@ -32,7 +33,7 @@ def scan_targets(targets):
             files += sorted(p for p in path.iterdir()
                             if is_candidate(p.name) and p.is_file() and not p.is_symlink())
         else:
-            files.append(path)
+            files.append(path.resolve() if path.is_symlink() else path)
     return files
 
 

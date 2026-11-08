@@ -169,6 +169,7 @@ class SecretServiceStore:
 
 
 _said_no_store = False
+_store_errors = set()  # (store, error) already logged by read_key()
 
 
 def key_store():
@@ -232,7 +233,9 @@ def read_key():
             return plain
         raise
     except Exception as e:
-        log(f"could not use {store.name}: {e}")
+        if (store.name, str(e)) not in _store_errors:  # a plain key is read before every request
+            _store_errors.add((store.name, str(e)))
+            log(f"could not use {store.name}: {e}")
         return plain
 
 
