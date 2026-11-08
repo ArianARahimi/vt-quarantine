@@ -14,6 +14,7 @@ UPDATE_MAX_BYTES = 64 * 1024**2
 # signed with an old one.
 RELEASE_KEYS = (
     "703f6d9f2f1df368340fe0ef973a427cf938c16c65187f66b5409b3c713f57d5",  # 2026-10-29
+    "f0120310513560626fd41751cfe2e4519abe1f5f6f71a35691d16dfa48e6adac",  # 2026-11-08
 )
 NO_AUTO_UPDATE = CONFIG_DIR / "no-auto-update"
 QUIET_UPDATES = CONFIG_DIR / "quiet-updates"  # --auto-update quiet: no note after an update
