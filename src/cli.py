@@ -90,6 +90,7 @@ def print_result(r):
             "too_large": f"  NOT ON VIRUSTOTAL, and too large to upload ({r.get('size', 0) // 1024**2} MB)",
             "not_uploaded": "  NOT ON VIRUSTOTAL (not uploaded)",
             "no_engines": "  NO VERDICT: no engine could scan it",
+            "few_engines": f"  NO VERDICT: only {r.get('engines')} engines could scan it",
             "encrypted": f"  NO VERDICT: password-protected, so its contents weren't scanned "
                          f"(0/{r.get('engines')} means nothing here)",
             "error": f"  error: {plain(r.get('error'))}",

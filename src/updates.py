@@ -19,6 +19,13 @@ UPDATED_MARKER = DATA_DIR / "updated"
 # it's an upgrade (so the data stays), but not every Windows Installer does (Wine).
 UPDATING_MARKER = DATA_DIR / "updating"
 DECLINED_UPDATE = CONFIG_DIR / "declined-update"  # a version the user said no to
+# Run as root with: the package, its SHA-256, the install command. The package waits
+# in a folder this user can write to while the password is typed, so root installs
+# its own copy, and only if that is the file that was verified.
+ROOT_INSTALL = ('d=$(mktemp -d) || exit 1; trap \'rm -rf "$d"\' EXIT; f="$d/${1##*/}"; cp -- "$1" "$f" || exit 1; '
+                'echo "$2  $f" | sha256sum -c - >/dev/null 2>&1 || '
+                '{ echo "the package is not the one that was verified: not installed" >&2; exit 1; }; '
+                'shift 2; "$@" "$f"')
 
 
 def ed25519_verify(public, message, signature):
@@ -273,8 +280,10 @@ class Updater:
             os.chmod(package, 0o644)
             cmd = {"deb": ["apt-get", "install", "-y"], "rpm": ["dnf", "install", "-y"],
                    "arch": ["pacman", "-U", "--noconfirm"]}[package_format()]
-            r = subprocess.run(["pkexec", *cmd, str(package)], capture_output=True, text=True)
-            if r.returncode == 126:  # the password prompt was closed
+            r = subprocess.run(["pkexec", "/bin/sh", "-c", ROOT_INSTALL, "sh", str(package),
+                                hashlib.sha256(data).hexdigest(), *cmd], capture_output=True, text=True)
+            # The password prompt was closed: 126, or (KDE's prompt) 127 "Not authorized".
+            if r.returncode == 126 or r.returncode == 127 and "Not authorized" in r.stderr:
                 self.decline(v)
                 return False
             if r.returncode:

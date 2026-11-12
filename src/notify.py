@@ -142,6 +142,7 @@ class FreedesktopNotifier(Notifier):
                              path=self.addr.object_path, member=member)
             bus.AddMatch(rule)
             self.filters.append(self.router.filter(rule, queue=signals))
+        self.owner = self.name_owner()
         threading.Thread(target=self.dispatch, args=(signals,), daemon=True).start()
         caps = self.call("GetCapabilities")[0]
         self.markup = "body-markup" in caps
@@ -155,11 +156,32 @@ class FreedesktopNotifier(Notifier):
         msg = new_method_call(self.addr, method, signature, body)
         return unwrap_msg(self.router.send_and_get_reply(msg, timeout=10))
 
+    def name_owner(self):
+        """The bus connection of the notification server (None if there is none)."""
+        from jeepney import message_bus
+        from jeepney.io.threading import Proxy
+        try:
+            return Proxy(message_bus, self.router, timeout=10).GetNameOwner(self.addr.bus_name)[0]
+        except Exception:
+            return None
+
+    def from_server(self, msg):
+        """Did the notification server send this? Any program on the session bus can
+        send a signal that looks like a button being pressed."""
+        from jeepney import HeaderFields
+        sender = msg.header.fields.get(HeaderFields.sender)
+        if sender != self.owner:
+            self.owner = self.name_owner()  # the server may have been restarted
+        return sender is not None and sender == self.owner
+
     def dispatch(self, signals):
         while True:
             # ActionInvoked carries (id, action key), NotificationClosed (id, reason).
+            msg = signals.get()
             try:
-                nid, arg = signals.get().body
+                if not self.from_server(msg):
+                    continue
+                nid, arg = msg.body
             except ValueError:
                 continue
             with self.cond:

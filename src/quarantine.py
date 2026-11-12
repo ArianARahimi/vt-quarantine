@@ -129,14 +129,102 @@ def wait_complete(path):
         time.sleep(STABLE_SECONDS)
 
 
-def release(path):
-    unlock_file(path)
+FICLONE = 0x40049409  # Linux: share the data with a new file (Btrfs, XFS), no copying
+
+
+def copy_out(path, folder):
+    """A new file in folder holding what path holds right now: (the file, its SHA-256).
+    A program that still has path open goes on writing to the old file, not this one."""
+    fd, tmp = tempfile.mkstemp(prefix=".vtq-", dir=folder)
+    tmp = Path(tmp)
+    try:
+        with os.fdopen(fd, "w+b") as out, open_nofollow(path) as src:
+            try:
+                if not sys.platform.startswith("linux"):
+                    raise OSError
+                import fcntl
+                fcntl.ioctl(out.fileno(), FICLONE, src.fileno())
+            except OSError:
+                shutil.copyfileobj(src, out, 1 << 20)
+            out.seek(0)  # hashed as it landed, whichever way it got there
+            h = hashlib.sha256()
+            for chunk in iter(lambda: out.read(1 << 20), b""):
+                h.update(chunk)
+        shutil.copystat(path, tmp, follow_symlinks=False)  # times, and on Linux where it came from
+        if MACOS:
+            copy_mac_attributes(path, tmp)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp, h.hexdigest()
+
+
+def copy_mac_attributes(path, copy):
+    """macOS: what the download carries along (where it's from, when), and above all
+    the mark Gatekeeper goes by: without that one the copy isn't handed out."""
+    xattr = "/usr/bin/xattr"
+    listed = subprocess.run([xattr, str(path)], capture_output=True, text=True, check=True).stdout
+    for name in listed.splitlines():
+        must = name == "com.apple.quarantine"  # others may be the system's own to set
+        value = subprocess.run([xattr, "-px", name, str(path)], capture_output=True, text=True, check=must)
+        if value.returncode == 0:
+            try:  # (a value too big for a command line can't be passed on)
+                subprocess.run([xattr, "-wx", name, "".join(value.stdout.split()), str(copy)],
+                               capture_output=True, check=must)
+            except OSError:
+                if must:
+                    raise
+
+
+def nobody_has_open(path):
+    """Windows: raises (PermissionError) while any program has the file open. One that
+    opened it allowing others to delete it could be moved along with its file, and go
+    on writing to it in Downloads."""
+    import ctypes
+    from ctypes import wintypes as w
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = w.HANDLE
+    kernel32.CreateFileW.argtypes = (w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE)
+    kernel32.CloseHandle.argtypes = (w.HANDLE,)
+    # GENERIC_READ, shared with no one, OPEN_EXISTING
+    handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0, None)
+    if handle in (None, w.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    kernel32.CloseHandle(handle)
+
+
+def release(path, sha=None):
+    """Move a file to Downloads. None (and it stays) if it no longer holds what was
+    checked (sha). What arrives is a copy made and hashed here, so nothing that still
+    has the download open can add to it afterwards. Windows moves the file itself (a
+    copy would lose the mark that it came from the internet), once no program has
+    it open."""
     dest = RELEASE_DIR / path.name
     n = 1
     while dest.exists():
         dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
         n += 1
-    retry_locked(lambda: shutil.move(path, dest))
+    unlock_file(path)
+    try:
+        if WINDOWS:
+            changed = sha and retry_locked(lambda: sha256(path)) != sha
+            if not changed:
+                retry_locked(lambda: (nobody_has_open(path), shutil.move(path, dest)))
+        else:
+            tmp, copied = copy_out(path, RELEASE_DIR)
+            changed = sha and copied != sha
+            if changed:
+                tmp.unlink()
+            else:
+                os.replace(tmp, dest)
+                path.unlink()
+    except BaseException:
+        lock_file(path)
+        raise
+    if changed:
+        lock_file(path)
+        log(f"{path.name} changed after it was checked, checking again")
+        return None
     log(f"moved {path.name} to {dest}")
     return dest
 
@@ -173,13 +261,17 @@ def verdict_line(name, stats, results):
 
 
 def classify(stats, tags):
-    """clean, flagged, no_engines or encrypted (engines can't see inside a
-    password-protected archive, so 0 detections means nothing there)."""
+    """clean, flagged, no_engines, few_engines (most gave up or can't read the file: a
+    file padded to be huge gets past them that way) or encrypted (engines can't see
+    inside a password-protected archive). In the last two, 0 detections means nothing."""
     bad, sus, total = counts(stats)
     if not total:
         return "no_engines"
     if bad or sus:
         return "flagged"
+    gave_up = sum(stats.get(k, 0) for k in ("timeout", "confirmed-timeout", "failure"))
+    if total < MIN_ENGINES or gave_up > total:
+        return "few_engines"
     return "encrypted" if "encrypted" in (tags or ()) else "clean"
 
 
@@ -397,12 +489,16 @@ class Quarantine:
         if kind == "no_engines":
             return self.no_verdict(path, sha, sig, "No engines could scan this file",
                                    f"{name} got no verdict from any engine.", "dialog-warning")
+        if kind == "few_engines":
+            return self.no_verdict(path, sha, sig, "Too few engines scanned this file",
+                                   f"{name} was only scanned by {total} engines; the rest couldn't "
+                                   f"(0/{total} means little here).", "dialog-warning")
         if kind == "encrypted":  # a common way to slip malware past scanners
             return self.no_verdict(path, sha, sig, "Encrypted archive",
                                    f"{name} is password-protected, so VirusTotal could not scan its "
                                    f"contents (0/{total} means nothing here).", "dialog-warning")
         if kind == "clean":
-            return self.release_unchanged(path, sig, "Clean — moved to Downloads",
+            return self.release_unchanged(path, sha, sig, "Clean — moved to Downloads",
                                           f"{name} (0/{total} detections)")
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
@@ -414,17 +510,17 @@ class Quarantine:
         if not marked_safe(sha):
             return self.ask(path, sha, summary, body, icon, extra, report)
         log(f"{path.name} was marked safe before")
-        return self.release_unchanged(path, sig, "Marked safe before — moved to Downloads",
+        return self.release_unchanged(path, sha, sig, "Marked safe before — moved to Downloads",
                                       html.escape(path.name))
 
     @staticmethod
-    def release_unchanged(path, sig, summary, body):
+    def release_unchanged(path, sha, sig, summary, body):
         """Move a cleared file to Downloads, unless it was written to since it was
         hashed (the verdict is for other contents: the next scan checks it again)."""
         if signature(path) != sig:
             log(f"{path.name} changed while being checked, checking again")
-        else:
-            tell_moved(summary, body, release(path))
+        elif dest := release(path, sha):
+            tell_moved(summary, body, dest)
         return False
 
     def ask(self, *args, **kwargs):
@@ -464,7 +560,9 @@ class Quarantine:
                 if choice == "back":
                     continue
             if choice == "release":
-                dest = release(path)
+                dest = release(path, sha)
+                if not dest:
+                    return False  # changed: picked up again by the next scan
                 if flagged:
                     tell_moved("Moved to Downloads", f"{html.escape(path.name)}\nIt's still flagged: "
                                "if you download it again, you'll be warned again.", dest)
