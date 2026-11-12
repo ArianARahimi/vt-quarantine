@@ -116,8 +116,9 @@ deleted. Files left in quarantine are unlocked, never deleted.
   verdicts, or more engines giving up than answering): padding a file until
   scanners skip it is a known trick. Real downloads aren't held by it: programs,
   PDFs, images, MP3s, archives and 300–375 MB installers and ISOs all got 42–67
-  verdicts. A real padded file hasn't been tried; "Mark as safe" moves such a
-  file anyway.
+  verdicts. Neither was a real padded file: PuTTY with 200 MB of zeros added
+  got 70 verdicts, and 3 engines flagged it as an inflated file. "Mark as safe"
+  moves a held file anyway.
 - **A cleared file reaches Downloads as a fresh copy** (Linux, macOS), so a
   download that is still being written can't add to it afterwards. That needs
   room for the file twice for a moment, except on Btrfs and XFS. Tested on
@@ -129,8 +130,8 @@ deleted. Files left in quarantine are unlocked, never deleted.
   and by curl.
 - **A Linux package update is checked again by root before it's installed.**
   Tested through the real password prompt with apt on Ubuntu 26.04 and dnf on
-  Fedora 44 (accounts without a password), and on Arch with KDE's prompt but
-  without a real install. The check itself works in dash, busybox, bash and
+  Fedora 44 (accounts without a password), and with pacman on Arch through
+  KDE's prompt (the running program restarted into the new version). The check itself works in dash, busybox, bash and
   zsh. The prompt shows the whole command it runs, which
   reads worse than before. On KDE, giving up after wrong passwords looks the
   same as Cancel, so that version isn't offered again either.
