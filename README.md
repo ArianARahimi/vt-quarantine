@@ -218,8 +218,8 @@ ones with Upload.
   names may differ. RHEL, Alma and Rocky Linux need EPEL for `python3-jeepney`.
 - **An update from your package manager takes effect within about 20 seconds:**
   vt-quarantine notices its new copy and restarts into it (never in the middle
-  of a check). Tested by replacing the program file; not yet with a real
-  package manager upgrade.
+  of a check). Tested by replacing the program file, and with a real pacman
+  install on Arch (restarted 12 seconds later).
 - **Browser setup on Linux has run for real with Brave (Flatpak) on KDE
   Plasma**: set up while closed (also after it was killed), a real download
   went through quarantine, and uninstalling put it back. Chrome, Chromium,
