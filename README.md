@@ -107,11 +107,10 @@ deleted. Files left in quarantine are unlocked, never deleted.
   itself; if the daily quota runs out, files wait in quarantine and the
   notification says when it resets. `vt-quarantine --check` shows how much is
   used. Not tested with a real used-up quota (only against a stand-in).
-- **Old clean verdicts are rescanned first,** which makes those downloads wait
-  up to 5 minutes longer. VirusTotal's free tier often doesn't finish the
-  rescan in that time (4 of 4 in one test), and then the old verdict counts.
-  Tested with `--scan` against the real VirusTotal; the
-  "Scanning on VirusTotal" notification for it only in the tests.
+- **A clean verdict over 30 days old still counts.** vt-quarantine asks
+  VirusTotal to rescan the file but doesn't wait: with a free key a rescan
+  sat in the queue for over 4 minutes (5 of 5 tries), so the new verdict
+  only helps the next download of that file.
 - **A file few engines could scan is held, even at 0 detections** (fewer than 20
   verdicts, or more engines giving up than answering): padding a file until
   scanners skip it is a known trick. Real downloads aren't held by it: programs,
