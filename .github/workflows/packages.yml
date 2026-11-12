@@ -160,7 +160,7 @@ jobs:
           case $FORMAT in
           deb) apt-get update && apt-get install -y ./dist/*.deb ;;
           rpm) dnf install -y ./dist/*.rpm ;;
-          arch) pacman -Sy --noconfirm && pacman -U --noconfirm dist/*.pkg.tar.zst ;;
+          arch) pacman -Syu --noconfirm && pacman -U --noconfirm dist/*.pkg.tar.zst ;;
           esac
 
       - name: Check it
