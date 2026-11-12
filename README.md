@@ -108,24 +108,30 @@ deleted. Files left in quarantine are unlocked, never deleted.
   notification says when it resets. `vt-quarantine --check` shows how much is
   used. Not tested with a real used-up quota (only against a stand-in).
 - **Old clean verdicts are rescanned first,** which makes those downloads wait
-  a minute or two longer. Tested with `--scan` against the real VirusTotal; the
+  up to 5 minutes longer. VirusTotal's free tier often doesn't finish the
+  rescan in that time (4 of 4 in one test), and then the old verdict counts.
+  Tested with `--scan` against the real VirusTotal; the
   "Scanning on VirusTotal" notification for it only in the tests.
 - **A file few engines could scan is held, even at 0 detections** (fewer than 20
   verdicts, or more engines giving up than answering): padding a file until
-  scanners skip it is a known trick. The threshold is a guess, not yet tried
-  against many real downloads; "Mark as safe" moves such a file anyway.
+  scanners skip it is a known trick. Real downloads aren't held by it: programs,
+  PDFs, images, MP3s, archives and 300–375 MB installers and ISOs all got 42–67
+  verdicts. A real padded file hasn't been tried; "Mark as safe" moves such a
+  file anyway.
 - **A cleared file reaches Downloads as a fresh copy** (Linux, macOS), so a
   download that is still being written can't add to it afterwards. That needs
   room for the file twice for a moment, except on Btrfs and XFS. Tested on
-  macOS 26 with a Safari download: the copy keeps the mark Gatekeeper goes by
-  and where it came from (that Gatekeeper then acts on it wasn't tried; an
-  attribute over about 512 KB is left out). Windows moves the file itself,
-  once no program has it open: tested on Windows 11 with files held open in
-  every sharing mode and by curl, not with a browser download.
+  macOS 26 with Safari downloads: the copy keeps where it came from and the
+  mark Gatekeeper goes by, and Gatekeeper still refuses to open an unsigned
+  script from it (an attribute over about 512 KB is left out). Windows moves
+  the file itself, once no program has it open: tested on Windows 11 with
+  Chrome downloads up to 45 MB, and with files held open in every sharing mode
+  and by curl.
 - **A Linux package update is checked again by root before it's installed.**
   Tested through the real password prompt with apt on Ubuntu 26.04 and dnf on
   Fedora 44 (accounts without a password), and on Arch with KDE's prompt but
-  without a real install. The prompt shows the whole command it runs, which
+  without a real install. The check itself works in dash, busybox, bash and
+  zsh. The prompt shows the whole command it runs, which
   reads worse than before. On KDE, giving up after wrong passwords looks the
   same as Cancel, so that version isn't offered again either.
 - **Waiting for fullscreen apps works on Windows, KDE Plasma and X11 desktops.**
