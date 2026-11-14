@@ -139,13 +139,15 @@ deleted. Files left in quarantine are unlocked, never deleted.
   the file itself, once no program has it open: tested on Windows 11 with
   Chrome downloads up to 45 MB, and with files held open in every sharing mode
   and by curl.
-- **A Linux package update is checked again by root before it's installed.**
-  Tested through the real password prompt with apt on Ubuntu 26.04 and dnf on
-  Fedora 44 (accounts without a password), and with pacman on Arch through
-  KDE's prompt (the running program restarted into the new version). The check itself works in dash, busybox, bash and
-  zsh. The prompt shows the whole command it runs, which
-  reads worse than before. On KDE, giving up after wrong passwords looks the
-  same as Cancel, so that version isn't offered again either.
+- **A Linux package update is checked again by root before it's installed:**
+  the release signature, that it's the package for your system and that it's
+  newer than the installed version. The password prompt names it ("install the
+  vt-quarantine update"). This was tested through the real prompt with apt on
+  Ubuntu 26.04 and dnf on Fedora 44 (live sessions, accounts without a password),
+  including Cancel and refused packages. Not yet tested on Arch or with KDE's
+  prompt, which the previous version of this step passed. On KDE, giving up after
+  wrong passwords looks the same as Cancel, so that version isn't offered again
+  either.
 - **Waiting for fullscreen apps works on Windows, KDE Plasma and X11 desktops.**
   GNOME on Wayland and macOS give programs no way to tell.
 </details>
