@@ -67,6 +67,8 @@ UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
 MIN_ENGINES = 20          # 0 detections from fewer engines than this is no verdict
 STALE_DAYS = 30           # a clean verdict older than this gets a rescan for next time
+OUTSIDE_SCAN_SECONDS = 2  # how often Downloads and the Desktop are looked at
+OUTSIDE_QUEUE_MAX = 50    # new files waiting there at most (an archive unpacked loose)
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be
@@ -216,27 +218,45 @@ else:
     DATA_DIR = env_dir("XDG_DATA_HOME", HOME / ".local" / "share") / "vt-quarantine"
 
 
+def xdg_user_dir(name, default):
+    """Linux: a folder from user-dirs.dirs (XDG_<name>_DIR), which may have been moved
+    or renamed."""
+    user_dirs = xdg_config() / "user-dirs.dirs"
+    try:
+        m = re.search(rf'^XDG_{name}_DIR="([^"]*)"', user_dirs.read_text(), re.M)
+    except (OSError, UnicodeDecodeError):
+        m = None
+    if m:
+        path = Path(m.group(1).replace("$HOME", str(HOME)))
+        # Pointing it at $HOME itself means "no such folder" (xdg-user-dirs).
+        if path.is_absolute() and path != HOME:
+            return path
+    return default
+
+
 def downloads_dir():
     """The user's Downloads folder, which may have been moved or renamed."""
     if WINDOWS:
         # FOLDERID_Downloads; Explorer lets users move this folder anywhere.
         return known_folder("374DE290-123F-4565-9164-39C4925E467B", HOME / "Downloads")
     if not MACOS:
-        user_dirs = xdg_config() / "user-dirs.dirs"
-        try:
-            m = re.search(r'^XDG_DOWNLOAD_DIR="([^"]*)"', user_dirs.read_text(), re.M)
-        except (OSError, UnicodeDecodeError):
-            m = None
-        if m:
-            path = Path(m.group(1).replace("$HOME", str(HOME)))
-            # Pointing it at $HOME itself means "no Downloads folder" (xdg-user-dirs).
-            if path.is_absolute() and path != HOME:
-                return path
+        return xdg_user_dir("DOWNLOAD", HOME / "Downloads")
     return HOME / "Downloads"
+
+
+def desktop_dir():
+    """The user's Desktop folder, found the same way."""
+    if WINDOWS:
+        return known_folder("B4BFCC3A-DB2C-424C-B029-7FE99A87C641", HOME / "Desktop")  # FOLDERID_Desktop
+    if not MACOS:
+        return xdg_user_dir("DESKTOP", HOME / "Desktop")
+    return HOME / "Desktop"
 
 
 RELEASE_DIR = downloads_dir()
 QUARANTINE = RELEASE_DIR / ".quarantine"
+DESKTOP_DIR = desktop_dir()
+NO_FOLDER_WATCH = CONFIG_DIR / "no-folder-watch"  # --watch-folders off
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
@@ -1308,9 +1328,9 @@ def retry_locked(action):
             time.sleep(2)
 
 
-def sha256(path):
+def sha256(path, opener=None):
     h = hashlib.sha256()
-    with open_nofollow(path) as f:
+    with (opener or open_nofollow)(path) as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -1335,6 +1355,7 @@ def wait_complete(path):
 
 
 FICLONE = 0x40049409  # Linux: share the data with a new file (Btrfs, XFS), no copying
+RELEASED = set()  # files this program moved into Downloads itself: not checked again there
 
 
 def copy_out(path, folder):
@@ -1409,6 +1430,7 @@ def release(path, sha=None):
     while dest.exists():
         dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
         n += 1
+    RELEASED.add(dest)
     unlock_file(path)
     try:
         if WINDOWS:
@@ -1424,9 +1446,11 @@ def release(path, sha=None):
                 os.replace(tmp, dest)
                 path.unlink()
     except BaseException:
+        RELEASED.discard(dest)
         lock_file(path)
         raise
     if changed:
+        RELEASED.discard(dest)
         lock_file(path)
         log(f"{path.name} changed after it was checked, checking again")
         return None
@@ -1439,10 +1463,10 @@ def delete(path):
     log(f"deleted {path.name}")
 
 
-def should_auto_upload(path):
+def should_auto_upload(path, opener=None):
     if path.suffix.lower() in AUTO_UPLOAD_EXT:
         return True
-    with open_nofollow(path) as f:
+    with (opener or open_nofollow)(path) as f:
         return f.read(4).startswith(EXECUTABLE_MAGIC)
 
 
@@ -1782,6 +1806,121 @@ class Quarantine:
                 return choice
             log(f"holding {path.name} (notification dismissed)")
             return True
+
+
+# --- Files saved outside quarantine ---------------------------------------------------
+# A Save As box, or a download folder changed in the browser, puts files straight into
+# Downloads or onto the Desktop. New files there are checked too, quietly: nothing is
+# moved or locked, unknown programs are uploaded like in quarantine, and only a flagged
+# file brings a notification. Files already there when the program starts are left alone.
+
+SHORTCUT_EXT = {".lnk", ".url", ".desktop", ".webloc"}  # made by installers; hold local paths
+CLOUD_PLACEHOLDER = 0x1000 | 0x40000 | 0x400000  # Windows: offline, recall on open / on data access
+
+
+def watched_folders():
+    """Downloads, and the Desktop except on macOS (reading it there would bring up a
+    permission prompt of its own; Downloads is already allowed for quarantine)."""
+    if NO_FOLDER_WATCH.exists():
+        return []
+    folders = [RELEASE_DIR] if MACOS else [RELEASE_DIR, DESKTOP_DIR]
+    return [f for f in dict.fromkeys(folders) if f != QUARANTINE]
+
+
+def outside_candidate(entry):
+    """A new file worth checking: not hidden, not still downloading, not a shortcut,
+    and not a cloud file only listed here (reading it would download it)."""
+    name = entry.name
+    if name.startswith(".") or not is_candidate(name) or Path(name).suffix.lower() in SHORTCUT_EXT:
+        return False
+    try:
+        st = entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return not getattr(st, "st_file_attributes", 0) & CLOUD_PLACEHOLDER
+
+
+class Outside:
+    def __init__(self, q):
+        self.q = q          # its questions and ours take turns on screen
+        self.seen = {}      # folder -> names there at the last look
+        self.queue = Queue()
+        self.full_logged = False
+
+    def scan(self):
+        for folder in watched_folders():
+            try:
+                with os.scandir(folder) as entries:
+                    entries = list(entries)
+            except OSError:
+                self.seen.pop(folder, None)
+                continue
+            names = {e.name for e in entries}
+            first = folder not in self.seen
+            new = set() if first else names - self.seen[folder]
+            self.seen[folder] = names
+            for entry in entries:
+                if entry.name not in new or not outside_candidate(entry):
+                    continue
+                path = Path(entry.path)
+                if path in RELEASED:
+                    RELEASED.discard(path)
+                    continue
+                if self.queue.qsize() >= OUTSIDE_QUEUE_MAX:
+                    if not self.full_logged:
+                        log(f"too many new files in {folder} at once: not checking the rest")
+                        self.full_logged = True
+                    continue
+                self.full_logged = False
+                self.queue.put(path)
+
+    def work(self):
+        """Background: check queued files one at a time."""
+        while True:
+            path = self.queue.get()
+            try:
+                if wait_complete(path) and path not in RELEASED:
+                    self.check(path)
+            except Exception as e:
+                log(f"error checking {path}: {e}")
+            finally:
+                RELEASED.discard(path)
+
+    def check(self, path):
+        sha = sha256(path, _open_nofollow)
+        log(f"checking {path} (saved outside quarantine) {sha}")
+        attrs = lookup(path.name, sha)
+        if attrs is None:
+            if path.stat().st_size > UPLOAD_MAX or not should_auto_upload(path, _open_nofollow):
+                log(f"{path.name} is unknown to VirusTotal (not uploaded)")
+                return
+            stats, results, tags = upload(path, sha)
+        else:
+            stats, results, tags = attrs["last_analysis_stats"], attrs.get("last_analysis_results"), attrs.get("tags")
+        log(verdict_line(path.name, stats, results))
+        if classify(stats, tags) == "flagged":
+            self.warn(path, sha, stats, results)
+
+    def warn(self, path, sha, stats, results):
+        _, _, _, body = detection_summary(stats, results)
+        where = "on the Desktop" if path.parent == DESKTOP_DIR else "in Downloads"
+        with self.q.asking:
+            while path.exists():
+                choice = notifier.notify(f"⚠ Flagged: {path.name}",
+                                         f"{body}\nIt was saved {where} without going through quarantine.",
+                                         "critical", "security-low", [("report", "Show report"), ("delete", "Delete")])
+                if choice == "report":
+                    open_url(report_url(sha))
+                    time.sleep(2)  # so a repeated click doesn't land on the next popup
+                    continue
+                if choice == "delete":
+                    delete(path)
+                    notifier.tell("Deleted", html.escape(path.name), "user-trash-full")
+                else:
+                    log(f"left {path.name} where it is (notification dismissed)")
+                return
 
 
 # --- Updates -----------------------------------------------------------------------
@@ -2889,6 +3028,138 @@ def setup_new_chromium(record, set_up, waiting, covered):
             set_up.append(browser)
 
 
+# --- When a set-up browser stops saving into quarantine --------------------------------
+# Its download folder changed in its own settings. That's the user's call: one notice
+# per folder, "Put it back" or "Keep it", and nothing changes without an answer.
+# Only profiles seen saving into quarantine count, so one set up while it was open
+# (and not restarted yet) isn't mistaken for a change.
+
+def firefox_browser(folder):
+    """Which Firefox-based browser a profile folder belongs to."""
+    for browser, root in firefox_profile_roots():
+        if root in Path(folder).parents:
+            return browser
+    return "Firefox"
+
+
+def firefox_folder(folder):
+    """Where a profile saves downloads (None: quarantine). Open, its prefs.js is current;
+    closed, user.js decides again at the next start."""
+    prefs = read_prefs(folder / "prefs.js")
+    if not profile_in_use(folder):
+        prefs.update(read_prefs(folder / "user.js"))
+    kind = prefs.get("browser.download.folderList", "1")
+    if kind == "2":
+        value = prefs.get("browser.download.dir")
+        if is_quarantine(value):
+            return None
+        try:
+            return str(json.loads(value))
+        except (TypeError, ValueError):
+            return "another folder"
+    return str(DESKTOP_DIR if kind == "0" else RELEASE_DIR)
+
+
+def chromium_folder(prefs):
+    folder = chromium_download(prefs).get("default_directory")
+    if same_path(folder):
+        return None
+    return folder if isinstance(folder, str) and folder else str(RELEASE_DIR)
+
+
+def safari_folder():
+    folder = safari_settings().get("DownloadsPath")
+    return None if same_path(folder) else str(folder or RELEASE_DIR)
+
+
+def remove_user_js_block(folder):
+    """Take vt-quarantine's lines out of a profile's user.js."""
+    user_js = folder / "user.js"
+    try:
+        text = user_js.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    text = re.sub(rf"^{re.escape(USER_JS_BEGIN)}\n.*?^{re.escape(USER_JS_END)}\n?", "", text, flags=re.M | re.S)
+    if text.strip():
+        user_js.write_text(text, encoding="utf-8")
+    else:
+        user_js.unlink()
+
+
+def drift_checks(record):
+    """(record entry, browser, where it saves now, is it open) for each set-up browser."""
+    for entry in record.get("firefox", []):
+        folder = Path(entry["profile"])
+        if folder.is_dir():
+            yield entry, firefox_browser(folder), lambda f=folder: firefox_folder(f), lambda f=folder: profile_in_use(f)
+    for entry in record.get("chromium", []):
+        prefs = Path(entry["prefs"])
+        if prefs.is_file():
+            yield (entry, entry.get("browser", "Your browser"), lambda p=prefs: chromium_folder(p),
+                   lambda p=prefs: chromium_running(p.parent.parent))
+    if MACOS and isinstance(record.get("safari"), dict):
+        yield record["safari"], "Safari", safari_folder, safari_running
+
+
+def drift_pass(record):
+    for entry, browser, where, is_open in drift_checks(record):
+        try:
+            if entry.get("put_back") and not is_open():
+                point_back(entry, browser)
+                continue
+            folder = where()
+        except (OSError, ValueError, subprocess.CalledProcessError) as e:
+            log(f"could not read {browser}'s download folder: {e}")
+            continue
+        if folder is None:
+            entry["confirmed"] = True
+            continue
+        if not entry.get("confirmed") or entry.get("drift_answered") == folder:
+            continue
+        entry["drift_answered"] = folder
+        log(f"{browser} now saves downloads to {folder}")
+        wait_for_free_screen("browser notice")
+        choice = notifier.notify(f"{browser} no longer downloads into quarantine",
+                                 f"Its downloads now go to <b>{html.escape(folder)}</b> and aren't held "
+                                 "until VirusTotal has checked them.", "normal", "dialog-warning",
+                                 [("back", "Put it back"), ("keep", "Keep it")])
+        try:
+            if choice == "back":
+                entry["put_back"] = True
+                entry.pop("kept", None)
+                if is_open():
+                    if "profile" in entry:
+                        point_back(entry, browser)  # user.js: taken at its next start anyway
+                    else:
+                        notifier.tell(f"{browser} goes back to quarantine once it's closed", "", "security-high")
+                else:
+                    point_back(entry, browser)
+            else:  # "Keep it", or the notice closed: the choice stays
+                entry["kept"] = True
+                if "profile" in entry:
+                    remove_user_js_block(Path(entry["profile"]))  # or its next start would undo it
+                log(f"{browser}: kept saving downloads to {folder}")
+        except (OSError, ValueError, subprocess.CalledProcessError) as e:
+            log(f"could not change {browser}'s download folder: {e}")
+
+
+def point_back(entry, browser):
+    """Downloads of this browser go to quarantine again."""
+    entry.pop("put_back", None)
+    if "profile" in entry:
+        folder = Path(entry["profile"])
+        if setup_firefox_profile(folder) is not None or profile_in_use(folder):
+            notifier.tell(f"{browser} downloads into quarantine again", f"Restart {browser} for this to take effect.",
+                          "security-high")
+            return
+    elif "prefs" in entry:
+        setup_chromium_profile(Path(entry["prefs"]))
+    else:
+        safari_set("DownloadsPath", str(QUARANTINE))
+    log(f"{browser} downloads into quarantine again")
+    notifier.tell(f"{browser} downloads into quarantine again", "", "security-high")
+
+
 def save_browser_record(record):
     BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
     BROWSER_SETUP.write_text(json.dumps(record, indent=1))
@@ -2957,9 +3228,10 @@ def watch_browsers():
                 record = {}
             before = json.dumps(record, sort_keys=True)
             _, still, _ = browser_pass(record)
+            drift_pass(record)
             if json.dumps(record, sort_keys=True) != before:
                 save_browser_record(record)
-            waiting = bool(still)
+            waiting = bool(still) or any(e.get("put_back") for e, *_ in drift_checks(record))
         except Exception as e:
             log(f"browser setup failed: {e}")
 
@@ -2975,7 +3247,10 @@ def undo_browser_setup():
     for entry in record.get("firefox", []):
         folder = Path(entry["profile"])
         if folder.is_dir():
-            undo_firefox_profile(folder, entry.get("before", {}))
+            if entry.get("kept"):
+                remove_user_js_block(folder)  # its download folder is the user's own choice now
+            else:
+                undo_firefox_profile(folder, entry.get("before", {}))
             undo_firefox_handlers(folder, entry.get("handlers_before", {}))
             print(f"Put back the download settings of {folder}")
     if MACOS and "safari" in record:
@@ -4369,11 +4644,19 @@ def run():
     if MACOS:
         threading.Thread(target=watch_app, daemon=True).start()
     updater, own_file = Updater(), FileWatch()
+    outside, outside_due = Outside(q), 0
+    threading.Thread(target=outside.work, daemon=True).start()
     while True:
         try:
             q.scan()
         except Exception as e:
             log(f"scan error: {e}")
+        if time.monotonic() >= outside_due:
+            outside_due = time.monotonic() + OUTSIDE_SCAN_SECONDS
+            try:
+                outside.scan()
+            except Exception as e:
+                log(f"scan error outside quarantine: {e}")
         if updater.due():
             threading.Thread(target=updater.check, daemon=True).start()
         if own_file.replaced():
@@ -4386,6 +4669,19 @@ def run():
                 log("restarting into the new version")
                 restart(lock)
         time.sleep(POLL_SECONDS)
+
+
+def set_watch_folders(state):
+    if state == "off":
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        NO_FOLDER_WATCH.touch()
+        print("Only the quarantine folder is checked now.")
+    else:
+        NO_FOLDER_WATCH.unlink(missing_ok=True)
+        where = "Downloads" if MACOS else "Downloads or onto the Desktop"
+        print(f"New files saved straight into {where} are checked too. Only a flagged one "
+              "brings a notification; nothing there is moved.")
+    return 0
 
 
 def main():
@@ -4421,6 +4717,9 @@ def main():
     group.add_argument("-A", "--auto-update", choices=("on", "quiet", "off"),
                        help="daily update check: on (the default), quiet (no notification "
                             "after updating) or off")
+    group.add_argument("-W", "--watch-folders", choices=("on", "off"),
+                       help="also check new files saved straight into Downloads or onto the Desktop, "
+                            "quietly: on (the default) or off")
     args = parser.parse_args()
     if args.json and not args.scan:
         parser.error("--json only goes with --scan")
@@ -4446,6 +4745,8 @@ def main():
         return test_notification()
     if args.auto_update:
         return set_auto_update(args.auto_update)
+    if args.watch_folders:
+        return set_watch_folders(args.watch_folders)
     if args.forget_safe:
         SAFE_LIST.unlink(missing_ok=True)
         print("Forgotten: files you marked safe get checked like any other again.")

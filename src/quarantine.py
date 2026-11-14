@@ -103,9 +103,9 @@ def retry_locked(action):
             time.sleep(2)
 
 
-def sha256(path):
+def sha256(path, opener=None):
     h = hashlib.sha256()
-    with open_nofollow(path) as f:
+    with (opener or open_nofollow)(path) as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -130,6 +130,7 @@ def wait_complete(path):
 
 
 FICLONE = 0x40049409  # Linux: share the data with a new file (Btrfs, XFS), no copying
+RELEASED = set()  # files this program moved into Downloads itself: not checked again there
 
 
 def copy_out(path, folder):
@@ -204,6 +205,7 @@ def release(path, sha=None):
     while dest.exists():
         dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
         n += 1
+    RELEASED.add(dest)
     unlock_file(path)
     try:
         if WINDOWS:
@@ -219,9 +221,11 @@ def release(path, sha=None):
                 os.replace(tmp, dest)
                 path.unlink()
     except BaseException:
+        RELEASED.discard(dest)
         lock_file(path)
         raise
     if changed:
+        RELEASED.discard(dest)
         lock_file(path)
         log(f"{path.name} changed after it was checked, checking again")
         return None
@@ -234,10 +238,10 @@ def delete(path):
     log(f"deleted {path.name}")
 
 
-def should_auto_upload(path):
+def should_auto_upload(path, opener=None):
     if path.suffix.lower() in AUTO_UPLOAD_EXT:
         return True
-    with open_nofollow(path) as f:
+    with (opener or open_nofollow)(path) as f:
         return f.read(4).startswith(EXECUTABLE_MAGIC)
 
 
@@ -577,3 +581,118 @@ class Quarantine:
                 return choice
             log(f"holding {path.name} (notification dismissed)")
             return True
+
+
+# --- Files saved outside quarantine ---------------------------------------------------
+# A Save As box, or a download folder changed in the browser, puts files straight into
+# Downloads or onto the Desktop. New files there are checked too, quietly: nothing is
+# moved or locked, unknown programs are uploaded like in quarantine, and only a flagged
+# file brings a notification. Files already there when the program starts are left alone.
+
+SHORTCUT_EXT = {".lnk", ".url", ".desktop", ".webloc"}  # made by installers; hold local paths
+CLOUD_PLACEHOLDER = 0x1000 | 0x40000 | 0x400000  # Windows: offline, recall on open / on data access
+
+
+def watched_folders():
+    """Downloads, and the Desktop except on macOS (reading it there would bring up a
+    permission prompt of its own; Downloads is already allowed for quarantine)."""
+    if NO_FOLDER_WATCH.exists():
+        return []
+    folders = [RELEASE_DIR] if MACOS else [RELEASE_DIR, DESKTOP_DIR]
+    return [f for f in dict.fromkeys(folders) if f != QUARANTINE]
+
+
+def outside_candidate(entry):
+    """A new file worth checking: not hidden, not still downloading, not a shortcut,
+    and not a cloud file only listed here (reading it would download it)."""
+    name = entry.name
+    if name.startswith(".") or not is_candidate(name) or Path(name).suffix.lower() in SHORTCUT_EXT:
+        return False
+    try:
+        st = entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return not getattr(st, "st_file_attributes", 0) & CLOUD_PLACEHOLDER
+
+
+class Outside:
+    def __init__(self, q):
+        self.q = q          # its questions and ours take turns on screen
+        self.seen = {}      # folder -> names there at the last look
+        self.queue = Queue()
+        self.full_logged = False
+
+    def scan(self):
+        for folder in watched_folders():
+            try:
+                with os.scandir(folder) as entries:
+                    entries = list(entries)
+            except OSError:
+                self.seen.pop(folder, None)
+                continue
+            names = {e.name for e in entries}
+            first = folder not in self.seen
+            new = set() if first else names - self.seen[folder]
+            self.seen[folder] = names
+            for entry in entries:
+                if entry.name not in new or not outside_candidate(entry):
+                    continue
+                path = Path(entry.path)
+                if path in RELEASED:
+                    RELEASED.discard(path)
+                    continue
+                if self.queue.qsize() >= OUTSIDE_QUEUE_MAX:
+                    if not self.full_logged:
+                        log(f"too many new files in {folder} at once: not checking the rest")
+                        self.full_logged = True
+                    continue
+                self.full_logged = False
+                self.queue.put(path)
+
+    def work(self):
+        """Background: check queued files one at a time."""
+        while True:
+            path = self.queue.get()
+            try:
+                if wait_complete(path) and path not in RELEASED:
+                    self.check(path)
+            except Exception as e:
+                log(f"error checking {path}: {e}")
+            finally:
+                RELEASED.discard(path)
+
+    def check(self, path):
+        sha = sha256(path, _open_nofollow)
+        log(f"checking {path} (saved outside quarantine) {sha}")
+        attrs = lookup(path.name, sha)
+        if attrs is None:
+            if path.stat().st_size > UPLOAD_MAX or not should_auto_upload(path, _open_nofollow):
+                log(f"{path.name} is unknown to VirusTotal (not uploaded)")
+                return
+            stats, results, tags = upload(path, sha)
+        else:
+            stats, results, tags = attrs["last_analysis_stats"], attrs.get("last_analysis_results"), attrs.get("tags")
+        log(verdict_line(path.name, stats, results))
+        if classify(stats, tags) == "flagged":
+            self.warn(path, sha, stats, results)
+
+    def warn(self, path, sha, stats, results):
+        _, _, _, body = detection_summary(stats, results)
+        where = "on the Desktop" if path.parent == DESKTOP_DIR else "in Downloads"
+        with self.q.asking:
+            while path.exists():
+                choice = notifier.notify(f"⚠ Flagged: {path.name}",
+                                         f"{body}\nIt was saved {where} without going through quarantine.",
+                                         "critical", "security-low", [("report", "Show report"), ("delete", "Delete")])
+                if choice == "report":
+                    open_url(report_url(sha))
+                    time.sleep(2)  # so a repeated click doesn't land on the next popup
+                    continue
+                if choice == "delete":
+                    delete(path)
+                    notifier.tell("Deleted", html.escape(path.name), "user-trash-full")
+                else:
+                    log(f"left {path.name} where it is (notification dismissed)")
+                return

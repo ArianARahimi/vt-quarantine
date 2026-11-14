@@ -67,6 +67,8 @@ UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
 MIN_ENGINES = 20          # 0 detections from fewer engines than this is no verdict
 STALE_DAYS = 30           # a clean verdict older than this gets a rescan for next time
+OUTSIDE_SCAN_SECONDS = 2  # how often Downloads and the Desktop are looked at
+OUTSIDE_QUEUE_MAX = 50    # new files waiting there at most (an archive unpacked loose)
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be
@@ -216,27 +218,45 @@ else:
     DATA_DIR = env_dir("XDG_DATA_HOME", HOME / ".local" / "share") / "vt-quarantine"
 
 
+def xdg_user_dir(name, default):
+    """Linux: a folder from user-dirs.dirs (XDG_<name>_DIR), which may have been moved
+    or renamed."""
+    user_dirs = xdg_config() / "user-dirs.dirs"
+    try:
+        m = re.search(rf'^XDG_{name}_DIR="([^"]*)"', user_dirs.read_text(), re.M)
+    except (OSError, UnicodeDecodeError):
+        m = None
+    if m:
+        path = Path(m.group(1).replace("$HOME", str(HOME)))
+        # Pointing it at $HOME itself means "no such folder" (xdg-user-dirs).
+        if path.is_absolute() and path != HOME:
+            return path
+    return default
+
+
 def downloads_dir():
     """The user's Downloads folder, which may have been moved or renamed."""
     if WINDOWS:
         # FOLDERID_Downloads; Explorer lets users move this folder anywhere.
         return known_folder("374DE290-123F-4565-9164-39C4925E467B", HOME / "Downloads")
     if not MACOS:
-        user_dirs = xdg_config() / "user-dirs.dirs"
-        try:
-            m = re.search(r'^XDG_DOWNLOAD_DIR="([^"]*)"', user_dirs.read_text(), re.M)
-        except (OSError, UnicodeDecodeError):
-            m = None
-        if m:
-            path = Path(m.group(1).replace("$HOME", str(HOME)))
-            # Pointing it at $HOME itself means "no Downloads folder" (xdg-user-dirs).
-            if path.is_absolute() and path != HOME:
-                return path
+        return xdg_user_dir("DOWNLOAD", HOME / "Downloads")
     return HOME / "Downloads"
+
+
+def desktop_dir():
+    """The user's Desktop folder, found the same way."""
+    if WINDOWS:
+        return known_folder("B4BFCC3A-DB2C-424C-B029-7FE99A87C641", HOME / "Desktop")  # FOLDERID_Desktop
+    if not MACOS:
+        return xdg_user_dir("DESKTOP", HOME / "Desktop")
+    return HOME / "Desktop"
 
 
 RELEASE_DIR = downloads_dir()
 QUARANTINE = RELEASE_DIR / ".quarantine"
+DESKTOP_DIR = desktop_dir()
+NO_FOLDER_WATCH = CONFIG_DIR / "no-folder-watch"  # --watch-folders off
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key

@@ -74,6 +74,8 @@ installed. Details: [guide](docs/GUIDE.md#browser-setup).
   **Mark as safe**.
 - **Unknown to VirusTotal:** programs are uploaded for a scan; documents and
   archives ask first, since uploads can be seen by VirusTotal's paying users.
+- **Saved straight into Downloads or onto the Desktop** (a Save As box): checked
+  too, quietly. Only a flagged file brings a notification.
 - **While you play fullscreen,** questions wait until you're done.
 
 More: [flagged files, Mark as safe, updates, privacy, commands](docs/GUIDE.md).
@@ -96,9 +98,13 @@ deleted. Files left in quarantine are unlocked, never deleted.
 
 - **A clean result isn't a guarantee.** New or targeted malware often has no
   detections yet. VirusTotal is one layer of protection, not a sandbox.
-- **Only the quarantine folder is watched.** Other tools, and Save As dialogs
-  pointed at another folder, skip it. Check such files by hand with
-  `vt-quarantine --scan <file or folder>`.
+- **Files saved outside quarantine are checked, not held.** New files saved
+  straight into Downloads, or onto the Desktop (not on macOS), are looked up but
+  not locked: a flagged one is reported, maybe after it was opened. Other
+  folders, subfolders and files there before vt-quarantine started aren't
+  checked; use `vt-quarantine --scan <file or folder>` for those.
+- **The browser drift notice and folder checks are new** and have only been
+  tested by the automated tests and on Linux and a Windows VM, not on macOS.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the

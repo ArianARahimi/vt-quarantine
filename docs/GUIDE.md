@@ -23,7 +23,10 @@ sets up **every browser it finds**, in every profile, by itself:
   they're checked, and turned off again if it's switched on later.
 
 Each profile is set up once: if you change its download folder afterwards, that
-stays. One notification says what was set up. Only a **default browser that
+stays. Once per folder, a notification says the browser no longer downloads into
+quarantine, with **Put it back** and **Keep it**. Closing it counts as keeping it,
+and Firefox-based browsers then keep your folder after a restart too. One
+notification says what was set up. Only a **default browser that
 can't be set up from outside** (one it doesn't know) gets a
 notification with the folder and a **Copy folder** button instead; paste it into
 the browser's download setting (see below). Uninstalling puts every browser's
@@ -103,6 +106,17 @@ If you close a notification without choosing, the file stays locked in
 quarantine until the program restarts (at your next sign-in) and asks again. To
 take a file out, use the notification: one moved out by hand stays locked.
 
+### Files saved outside quarantine
+
+A Save As box, or a browser's download folder changed by hand, can put a file
+straight into Downloads or onto the Desktop. New files there are checked too,
+quietly: nothing is locked or moved, unknown programs are uploaded like in
+quarantine, and only a **flagged** file brings a notification (**Show report**,
+**Delete**). Files that were there before vt-quarantine started, hidden files,
+unfinished downloads, shortcuts and Windows cloud files not yet on the computer
+are skipped. On macOS only Downloads is checked: reading the Desktop needs a
+permission of its own. `vt-quarantine --watch-folders off` stops this.
+
 ### Games and other fullscreen apps
 
 While a game, a video or a presentation fills the screen, vt-quarantine keeps
@@ -181,6 +195,8 @@ vt-quarantine -C, --check              fetch missing packages, show how much of 
 vt-quarantine -T, --test-notification  show a test notification with buttons
 vt-quarantine -A, --auto-update off    stop checking for updates (on: start again;
                                        quiet: update without a notification)
+vt-quarantine -W, --watch-folders off  only check the quarantine folder (on: also new
+                                       files in Downloads and on the Desktop)
 vt-quarantine -F, --forget-safe        forget the files you marked safe
 vt-quarantine -V, --version
 ```

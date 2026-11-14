@@ -232,11 +232,19 @@ def run():
     if MACOS:
         threading.Thread(target=watch_app, daemon=True).start()
     updater, own_file = Updater(), FileWatch()
+    outside, outside_due = Outside(q), 0
+    threading.Thread(target=outside.work, daemon=True).start()
     while True:
         try:
             q.scan()
         except Exception as e:
             log(f"scan error: {e}")
+        if time.monotonic() >= outside_due:
+            outside_due = time.monotonic() + OUTSIDE_SCAN_SECONDS
+            try:
+                outside.scan()
+            except Exception as e:
+                log(f"scan error outside quarantine: {e}")
         if updater.due():
             threading.Thread(target=updater.check, daemon=True).start()
         if own_file.replaced():
@@ -249,6 +257,19 @@ def run():
                 log("restarting into the new version")
                 restart(lock)
         time.sleep(POLL_SECONDS)
+
+
+def set_watch_folders(state):
+    if state == "off":
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        NO_FOLDER_WATCH.touch()
+        print("Only the quarantine folder is checked now.")
+    else:
+        NO_FOLDER_WATCH.unlink(missing_ok=True)
+        where = "Downloads" if MACOS else "Downloads or onto the Desktop"
+        print(f"New files saved straight into {where} are checked too. Only a flagged one "
+              "brings a notification; nothing there is moved.")
+    return 0
 
 
 def main():
@@ -284,6 +305,9 @@ def main():
     group.add_argument("-A", "--auto-update", choices=("on", "quiet", "off"),
                        help="daily update check: on (the default), quiet (no notification "
                             "after updating) or off")
+    group.add_argument("-W", "--watch-folders", choices=("on", "off"),
+                       help="also check new files saved straight into Downloads or onto the Desktop, "
+                            "quietly: on (the default) or off")
     args = parser.parse_args()
     if args.json and not args.scan:
         parser.error("--json only goes with --scan")
@@ -309,6 +333,8 @@ def main():
         return test_notification()
     if args.auto_update:
         return set_auto_update(args.auto_update)
+    if args.watch_folders:
+        return set_watch_folders(args.watch_folders)
     if args.forget_safe:
         SAFE_LIST.unlink(missing_ok=True)
         print("Forgotten: files you marked safe get checked like any other again.")

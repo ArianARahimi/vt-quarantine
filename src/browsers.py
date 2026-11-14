@@ -728,6 +728,138 @@ def setup_new_chromium(record, set_up, waiting, covered):
             set_up.append(browser)
 
 
+# --- When a set-up browser stops saving into quarantine --------------------------------
+# Its download folder changed in its own settings. That's the user's call: one notice
+# per folder, "Put it back" or "Keep it", and nothing changes without an answer.
+# Only profiles seen saving into quarantine count, so one set up while it was open
+# (and not restarted yet) isn't mistaken for a change.
+
+def firefox_browser(folder):
+    """Which Firefox-based browser a profile folder belongs to."""
+    for browser, root in firefox_profile_roots():
+        if root in Path(folder).parents:
+            return browser
+    return "Firefox"
+
+
+def firefox_folder(folder):
+    """Where a profile saves downloads (None: quarantine). Open, its prefs.js is current;
+    closed, user.js decides again at the next start."""
+    prefs = read_prefs(folder / "prefs.js")
+    if not profile_in_use(folder):
+        prefs.update(read_prefs(folder / "user.js"))
+    kind = prefs.get("browser.download.folderList", "1")
+    if kind == "2":
+        value = prefs.get("browser.download.dir")
+        if is_quarantine(value):
+            return None
+        try:
+            return str(json.loads(value))
+        except (TypeError, ValueError):
+            return "another folder"
+    return str(DESKTOP_DIR if kind == "0" else RELEASE_DIR)
+
+
+def chromium_folder(prefs):
+    folder = chromium_download(prefs).get("default_directory")
+    if same_path(folder):
+        return None
+    return folder if isinstance(folder, str) and folder else str(RELEASE_DIR)
+
+
+def safari_folder():
+    folder = safari_settings().get("DownloadsPath")
+    return None if same_path(folder) else str(folder or RELEASE_DIR)
+
+
+def remove_user_js_block(folder):
+    """Take vt-quarantine's lines out of a profile's user.js."""
+    user_js = folder / "user.js"
+    try:
+        text = user_js.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    text = re.sub(rf"^{re.escape(USER_JS_BEGIN)}\n.*?^{re.escape(USER_JS_END)}\n?", "", text, flags=re.M | re.S)
+    if text.strip():
+        user_js.write_text(text, encoding="utf-8")
+    else:
+        user_js.unlink()
+
+
+def drift_checks(record):
+    """(record entry, browser, where it saves now, is it open) for each set-up browser."""
+    for entry in record.get("firefox", []):
+        folder = Path(entry["profile"])
+        if folder.is_dir():
+            yield entry, firefox_browser(folder), lambda f=folder: firefox_folder(f), lambda f=folder: profile_in_use(f)
+    for entry in record.get("chromium", []):
+        prefs = Path(entry["prefs"])
+        if prefs.is_file():
+            yield (entry, entry.get("browser", "Your browser"), lambda p=prefs: chromium_folder(p),
+                   lambda p=prefs: chromium_running(p.parent.parent))
+    if MACOS and isinstance(record.get("safari"), dict):
+        yield record["safari"], "Safari", safari_folder, safari_running
+
+
+def drift_pass(record):
+    for entry, browser, where, is_open in drift_checks(record):
+        try:
+            if entry.get("put_back") and not is_open():
+                point_back(entry, browser)
+                continue
+            folder = where()
+        except (OSError, ValueError, subprocess.CalledProcessError) as e:
+            log(f"could not read {browser}'s download folder: {e}")
+            continue
+        if folder is None:
+            entry["confirmed"] = True
+            continue
+        if not entry.get("confirmed") or entry.get("drift_answered") == folder:
+            continue
+        entry["drift_answered"] = folder
+        log(f"{browser} now saves downloads to {folder}")
+        wait_for_free_screen("browser notice")
+        choice = notifier.notify(f"{browser} no longer downloads into quarantine",
+                                 f"Its downloads now go to <b>{html.escape(folder)}</b> and aren't held "
+                                 "until VirusTotal has checked them.", "normal", "dialog-warning",
+                                 [("back", "Put it back"), ("keep", "Keep it")])
+        try:
+            if choice == "back":
+                entry["put_back"] = True
+                entry.pop("kept", None)
+                if is_open():
+                    if "profile" in entry:
+                        point_back(entry, browser)  # user.js: taken at its next start anyway
+                    else:
+                        notifier.tell(f"{browser} goes back to quarantine once it's closed", "", "security-high")
+                else:
+                    point_back(entry, browser)
+            else:  # "Keep it", or the notice closed: the choice stays
+                entry["kept"] = True
+                if "profile" in entry:
+                    remove_user_js_block(Path(entry["profile"]))  # or its next start would undo it
+                log(f"{browser}: kept saving downloads to {folder}")
+        except (OSError, ValueError, subprocess.CalledProcessError) as e:
+            log(f"could not change {browser}'s download folder: {e}")
+
+
+def point_back(entry, browser):
+    """Downloads of this browser go to quarantine again."""
+    entry.pop("put_back", None)
+    if "profile" in entry:
+        folder = Path(entry["profile"])
+        if setup_firefox_profile(folder) is not None or profile_in_use(folder):
+            notifier.tell(f"{browser} downloads into quarantine again", f"Restart {browser} for this to take effect.",
+                          "security-high")
+            return
+    elif "prefs" in entry:
+        setup_chromium_profile(Path(entry["prefs"]))
+    else:
+        safari_set("DownloadsPath", str(QUARANTINE))
+    log(f"{browser} downloads into quarantine again")
+    notifier.tell(f"{browser} downloads into quarantine again", "", "security-high")
+
+
 def save_browser_record(record):
     BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
     BROWSER_SETUP.write_text(json.dumps(record, indent=1))
@@ -796,9 +928,10 @@ def watch_browsers():
                 record = {}
             before = json.dumps(record, sort_keys=True)
             _, still, _ = browser_pass(record)
+            drift_pass(record)
             if json.dumps(record, sort_keys=True) != before:
                 save_browser_record(record)
-            waiting = bool(still)
+            waiting = bool(still) or any(e.get("put_back") for e, *_ in drift_checks(record))
         except Exception as e:
             log(f"browser setup failed: {e}")
 
@@ -814,7 +947,10 @@ def undo_browser_setup():
     for entry in record.get("firefox", []):
         folder = Path(entry["profile"])
         if folder.is_dir():
-            undo_firefox_profile(folder, entry.get("before", {}))
+            if entry.get("kept"):
+                remove_user_js_block(folder)  # its download folder is the user's own choice now
+            else:
+                undo_firefox_profile(folder, entry.get("before", {}))
             undo_firefox_handlers(folder, entry.get("handlers_before", {}))
             print(f"Put back the download settings of {folder}")
     if MACOS and "safari" in record:
