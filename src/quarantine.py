@@ -68,7 +68,7 @@ def make_quarantine():
     folder it lives in already is) and hidden (the dot already does that elsewhere)."""
     QUARANTINE.mkdir(parents=True, exist_ok=True)
     if not WINDOWS:
-        os.chmod(QUARANTINE, 0o700)
+        os.chmod(QUARANTINE, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # owner only
         return
     set_hidden(QUARANTINE, True)
 

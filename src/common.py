@@ -45,7 +45,8 @@ VERSION = "2.4.1"
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 # Full paths: Windows looks for a bare program name in the current folder first.
-WINDOWS_DIR = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+# Asked from Windows below (not %SystemRoot%, which anything setting our environment could point elsewhere).
+WINDOWS_DIR = Path(r"C:\Windows")
 SYSTEM32 = WINDOWS_DIR / "System32"
 HOME = Path.home()
 APP = "VirusTotal Quarantine"
@@ -201,6 +202,8 @@ def xdg_config():  # Linux; looked up each time (HOME can change in tests)
 
 
 if WINDOWS:
+    WINDOWS_DIR = known_folder("F38BF404-1D43-42F2-9305-67DE0B28FC23", WINDOWS_DIR)  # FOLDERID_Windows
+    SYSTEM32 = known_folder("1AC14E77-02E7-4E5D-B744-2EB1AE5198B7", SYSTEM32)  # FOLDERID_System
     HOME = known_folder("5E6C858F-0E22-4760-9AFE-EA3317B67173", HOME)  # FOLDERID_Profile
     CONFIG_DIR = known_folder("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D",  # FOLDERID_RoamingAppData
                               HOME / "AppData" / "Roaming") / "vt-quarantine"

@@ -124,7 +124,7 @@ def python_files():
     cached = BUILD / PY_ZIP
     if not cached.exists() or hashlib.sha256(cached.read_bytes()).hexdigest() != PY_SHA256:
         print(f"Downloading {PY_URL}")
-        with urllib.request.urlopen(PY_URL, timeout=60) as r:
+        with urllib.request.urlopen(PY_URL, timeout=60) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected  # fixed https URL, SHA-256 pinned
             data = r.read()
         if hashlib.sha256(data).hexdigest() != PY_SHA256:
             sys.exit(f"{PY_ZIP} from python.org isn't the file it should be (SHA-256 mismatch)")
@@ -267,7 +267,7 @@ def run(cmd):
 
 
 def msi_table(msi, name):
-    out = subprocess.run([os.environ.get("MSIINFO", "msiinfo"), "export", str(msi), name],
+    out = subprocess.run([os.environ.get("MSIINFO", "msiinfo"), "export", str(msi), name],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args  # build-time tool override
                          capture_output=True, text=True, check=True).stdout
     return [line.split("\t") for line in out.splitlines()[3:]]  # after the 3 header lines
 

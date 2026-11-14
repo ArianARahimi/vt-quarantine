@@ -276,7 +276,7 @@ class Updater:
             package.write_bytes(data)
             # The package manager runs as root and must be able to read it; others
             # may read it too (it's public), but only this user can change it.
-            os.chmod(folder, 0o755)  # noqa: S103  # nosec B103
+            os.chmod(folder, 0o755)  # noqa: S103  # nosec B103  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
             os.chmod(package, 0o644)
             cmd = {"deb": ["apt-get", "install", "-y"], "rpm": ["dnf", "install", "-y"],
                    "arch": ["pacman", "-U", "--noconfirm"]}[package_format()]

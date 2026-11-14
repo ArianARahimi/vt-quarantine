@@ -250,7 +250,7 @@ class WindowsNotifier(Notifier):
         self.live = {}
 
     def _show(self, summary, body, urgency, icon, actions, expire, on_event):
-        from xml.etree.ElementTree import Element, SubElement, tostring
+        from xml.etree.ElementTree import Element, SubElement, tostring  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml  # builds XML, parses nothing
         from winrt.windows.data.xml.dom import XmlDocument
         from winrt.windows.ui.notifications import (
             ToastActivatedEventArgs, ToastDismissalReason, ToastNotification)

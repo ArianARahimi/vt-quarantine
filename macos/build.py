@@ -89,7 +89,7 @@ def python_tree(arch):
     if not cached.exists() or hashlib.sha256(cached.read_bytes()).hexdigest() != sha:
         url = f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_TAG}/{name}"
         print(f"downloading {name}")
-        with urllib.request.urlopen(url, timeout=120) as r:  # noqa: S310  # nosec B310  # fixed https URL
+        with urllib.request.urlopen(url, timeout=120) as r:  # noqa: S310  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected  # fixed https URL
             data = r.read()
         if hashlib.sha256(data).hexdigest() != sha:
             raise SystemExit(f"{name} doesn't match its pinned SHA-256")
