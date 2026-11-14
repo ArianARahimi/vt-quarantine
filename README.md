@@ -103,8 +103,10 @@ deleted. Files left in quarantine are unlocked, never deleted.
   not locked: a flagged one is reported, maybe after it was opened. Other
   folders, subfolders and files there before vt-quarantine started aren't
   checked; use `vt-quarantine --scan <file or folder>` for those.
-- **The browser drift notice and folder checks are new** and have only been
-  tested by the automated tests and on Linux and a Windows VM, not on macOS.
+- **The browser drift notice and folder checks are new.** They were tested on
+  Linux and in Windows 11 and macOS 26 VMs with the app's own Python, with
+  VirusTotal answers and notifications simulated. Their real notifications
+  haven't been clicked through on Windows and macOS yet.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the
