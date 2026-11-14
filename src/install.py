@@ -336,7 +336,8 @@ MENU_MARKER = "# Written by vt-quarantine --install; --uninstall removes it."
 
 def desktop_quote(arg):
     """One Exec= argument of a .desktop file, quoted the way the spec asks."""
-    return '"' + re.sub(r'(["`$\\])', r"\\\1", arg).replace("%", "%%") + '"'
+    quoted = '"' + re.sub(r'(["`$\\])', r"\\\1", arg) + '"'
+    return quoted.replace("\\", "\\\\").replace("%", "%%")  # then the string escapes of every value
 
 
 def write_menu_entry(script):
@@ -363,9 +364,9 @@ def remove_menu_entry():
 
 
 def autostart_linux(script):
-    write_menu_entry(script)
     if UNIT_FILE.exists() and UNIT_MARKER not in UNIT_FILE.read_text():
         sys.exit(f"{UNIT_FILE} exists and wasn't written by --install; leaving it alone.")
+    write_menu_entry(script)
     UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
     UNIT_FILE.write_text(f"""{UNIT_MARKER}
 [Unit]

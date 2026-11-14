@@ -199,6 +199,7 @@ def run():
     (DATA_DIR / "pid").write_text(str(os.getpid()))
     UPDATING_MARKER.unlink(missing_ok=True)  # it went through, or didn't
     make_quarantine()
+    prune_origins()
 
     while not install_requirements():
         log("retrying in a minute")
