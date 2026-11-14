@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=VirusTotal Quarantine
+Comment=Settings for checking downloads on VirusTotal
+Exec=vt-quarantine --settings
+Icon=security-high
+Terminal=false
+Categories=System;Security;

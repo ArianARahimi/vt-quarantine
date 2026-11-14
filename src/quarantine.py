@@ -130,13 +130,53 @@ def wait_complete(path):
 
 
 FICLONE = 0x40049409  # Linux: share the data with a new file (Btrfs, XFS), no copying
-RELEASED = set()  # files this program moved into Downloads itself: not checked again there
+RELEASED = set()  # files this program moved out of quarantine itself: not taken in again
+ORIGINS_LOCK = threading.Lock()
 
 
-def copy_out(path, folder):
+def read_origins():
+    try:
+        data = json.loads(ORIGINS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def set_origin(name, folder):
+    """Remember (or with folder None, forget) where a file in quarantine came from."""
+    with ORIGINS_LOCK:
+        data = read_origins()
+        if folder is None:
+            if data.pop(name, None) is None:
+                return
+        else:
+            data[name] = str(folder)
+        ORIGINS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ORIGINS.with_name(ORIGINS.name + ".new")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, ORIGINS)
+
+
+def release_dir(path):
+    """Where a file goes out of quarantine: the folder it was taken from, if that's
+    still one of the folders watched for it (a tampered record can't point anywhere
+    else), or Downloads."""
+    origin = read_origins().get(path.name)
+    if origin:
+        folder = Path(origin)
+        if folder in watched_folders(any_mode=True) and folder.is_dir():
+            return folder
+    return RELEASE_DIR
+
+
+def place_name(folder):
+    return "Downloads" if folder == RELEASE_DIR else folder.name
+
+
+def copy_out(path, folder, suffix=""):
     """A new file in folder holding what path holds right now: (the file, its SHA-256).
     A program that still has path open goes on writing to the old file, not this one."""
-    fd, tmp = tempfile.mkstemp(prefix=".vtq-", dir=folder)
+    fd, tmp = tempfile.mkstemp(prefix=".vtq-", suffix=suffix, dir=folder)
     tmp = Path(tmp)
     try:
         with os.fdopen(fd, "w+b") as out, open_nofollow(path) as src:
@@ -177,6 +217,15 @@ def copy_mac_attributes(path, copy):
                     raise
 
 
+def win_move(src, dest):
+    """Windows: move a file, across drives too, keeping its streams (the mark that it
+    came from the internet lives in one; a plain copy would drop it)."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.MoveFileExW(str(src), str(dest), 0x2):  # MOVEFILE_COPY_ALLOWED
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def nobody_has_open(path):
     """Windows: raises (PermissionError) while any program has the file open. One that
     opened it allowing others to delete it could be moved along with its file, and go
@@ -195,15 +244,16 @@ def nobody_has_open(path):
 
 
 def release(path, sha=None):
-    """Move a file to Downloads. None (and it stays) if it no longer holds what was
-    checked (sha). What arrives is a copy made and hashed here, so nothing that still
-    has the download open can add to it afterwards. Windows moves the file itself (a
-    copy would lose the mark that it came from the internet), once no program has
-    it open."""
-    dest = RELEASE_DIR / path.name
+    """Move a file to Downloads, or back to the folder it was taken from. None (and it
+    stays) if it no longer holds what was checked (sha). What arrives is a copy made
+    and hashed here, so nothing that still has the download open can add to it
+    afterwards. Windows moves the file itself (a copy would lose the mark that it came
+    from the internet), once no program has it open."""
+    folder = release_dir(path)
+    dest = folder / path.name
     n = 1
     while dest.exists():
-        dest = RELEASE_DIR / f"{path.stem} ({n}){path.suffix}"
+        dest = folder / f"{path.stem} ({n}){path.suffix}"
         n += 1
     RELEASED.add(dest)
     unlock_file(path)
@@ -211,9 +261,9 @@ def release(path, sha=None):
         if WINDOWS:
             changed = sha and retry_locked(lambda: sha256(path)) != sha
             if not changed:
-                retry_locked(lambda: (nobody_has_open(path), shutil.move(path, dest)))
+                retry_locked(lambda: (nobody_has_open(path), win_move(path, dest)))
         else:
-            tmp, copied = copy_out(path, RELEASE_DIR)
+            tmp, copied = copy_out(path, folder)
             changed = sha and copied != sha
             if changed:
                 tmp.unlink()
@@ -229,12 +279,15 @@ def release(path, sha=None):
         lock_file(path)
         log(f"{path.name} changed after it was checked, checking again")
         return None
+    set_origin(path.name, None)
     log(f"moved {path.name} to {dest}")
     return dest
 
 
 def delete(path):
     retry_locked(lambda: path.unlink(missing_ok=True))
+    if path.parent == QUARANTINE:
+        set_origin(path.name, None)
     log(f"deleted {path.name}")
 
 
@@ -498,7 +551,7 @@ class Quarantine:
                                    f"{name} is password-protected, so VirusTotal could not scan its "
                                    f"contents (0/{total} means nothing here).", "dialog-warning")
         if kind == "clean":
-            return self.release_unchanged(path, sha, sig, "Clean — moved to Downloads",
+            return self.release_unchanged(path, sha, sig, "Clean — moved to {}",
                                           f"{name} (0/{total} detections)")
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
@@ -510,7 +563,7 @@ class Quarantine:
         if not marked_safe(sha):
             return self.ask(path, sha, summary, body, icon, extra, report)
         log(f"{path.name} was marked safe before")
-        return self.release_unchanged(path, sha, sig, "Marked safe before — moved to Downloads",
+        return self.release_unchanged(path, sha, sig, "Marked safe before — moved to {}",
                                       html.escape(path.name))
 
     @staticmethod
@@ -520,7 +573,7 @@ class Quarantine:
         if signature(path) != sig:
             log(f"{path.name} changed while being checked, checking again")
         elif dest := release(path, sha):
-            tell_moved(summary, body, dest)
+            tell_moved(summary.format(place_name(dest.parent)), body, dest)
         return False
 
     def ask(self, *args, **kwargs):
@@ -564,12 +617,12 @@ class Quarantine:
                 if not dest:
                     return False  # changed: picked up again by the next scan
                 if flagged:
-                    tell_moved("Moved to Downloads", f"{html.escape(path.name)}\nIt's still flagged: "
+                    tell_moved(f"Moved to {place_name(dest.parent)}", f"{html.escape(path.name)}\nIt's still flagged: "
                                "if you download it again, you'll be warned again.", dest)
                     return False
                 if sha:
                     remember_safe(sha, path.name)
-                tell_moved("Marked safe — moved to Downloads", html.escape(path.name), dest)
+                tell_moved(f"Marked safe — moved to {place_name(dest.parent)}", html.escape(path.name), dest)
                 return False
             if choice == "delete":
                 delete(path)
@@ -584,84 +637,388 @@ class Quarantine:
 
 
 # --- Files saved outside quarantine ---------------------------------------------------
-# A Save As box, or a download folder changed in the browser, puts files straight into
-# Downloads or onto the Desktop. New files there are checked too, quietly: nothing is
-# moved or locked, unknown programs are uploaded like in quarantine, and only a flagged
-# file brings a notification. Files already there when the program starts are left alone.
+# A Save As box, or a download folder changed in the browser, puts a download straight
+# into another folder. Downloads that land in the user's own folders (top level) are
+# taken into quarantine at once, checked like any other, and go back to where they were
+# saved once they're clean or marked safe ("move", the default). "check" only looks them
+# up where they are and warns about flagged ones; "off" leaves them alone.
+# Only downloads count, never the user's own files: what the system marks as coming from
+# the internet through a browser (Windows, macOS), or what a browser has just finished
+# saving (Linux: its "name.part" or ".crdownload" file renamed to the final name).
 
 SHORTCUT_EXT = {".lnk", ".url", ".desktop", ".webloc"}  # made by installers; hold local paths
 CLOUD_PLACEHOLDER = 0x1000 | 0x40000 | 0x400000  # Windows: offline, recall on open / on data access
+WATCH_MODES = ("move", "check", "off")
 
 
-def watched_folders():
-    """Downloads, and the Desktop except on macOS (reading it there would bring up a
-    permission prompt of its own; Downloads is already allowed for quarantine)."""
-    if NO_FOLDER_WATCH.exists():
+def watch_mode():
+    try:
+        mode = FOLDER_WATCH.read_text().strip()
+    except OSError:
+        return "move"
+    return mode if mode in WATCH_MODES else "move"
+
+
+def set_watch_mode(mode):
+    FOLDER_WATCH.parent.mkdir(parents=True, exist_ok=True)
+    FOLDER_WATCH.write_text(mode)
+
+
+def watched_folders(any_mode=False):
+    """Downloads, the user's own folders, and the folders added in the settings or
+    learned from the browsers' last Save As folder. On macOS, Desktop and Documents only
+    when allowed in the settings: reading them brings up a permission prompt of their own."""
+    if not any_mode and watch_mode() == "off":
         return []
-    folders = [RELEASE_DIR] if MACOS else [RELEASE_DIR, DESKTOP_DIR]
-    return [f for f in dict.fromkeys(folders) if f != QUARANTINE]
+    kinds = ("DOCUMENTS", "MUSIC", "PICTURES", "VIDEOS")
+    desktop = [DESKTOP_DIR]
+    if MACOS and not MAC_PRIVATE_WATCH.exists():
+        kinds, desktop = ("MUSIC", "PICTURES", "VIDEOS"), []
+    folders = [RELEASE_DIR, *desktop, *(user_dir(k) for k in kinds)]
+    lists = read_watch_list()
+    folders += [Path(f) for f in lists["added"] + lists["learned"]]
+    return [f for f in dict.fromkeys(folders) if f not in (QUARANTINE, HOME)]
+
+
+def read_watch_list():
+    """{"added": [...], "learned": [...]}: folders as strings, oldest first."""
+    try:
+        data = json.loads(WATCH_LIST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {k: [f for f in data.get(k, []) if isinstance(f, str)] for k in ("added", "learned")}
+
+
+def save_watch_list(data):
+    WATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
+    tmp = WATCH_LIST.with_name(WATCH_LIST.name + ".new")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, WATCH_LIST)
+
+
+def system_folders():
+    if WINDOWS:
+        found = [WINDOWS_DIR, HOME / "AppData"]
+        for guid in ("905E63B6-C1BF-494E-B29C-65B732D3D21A", "7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E",
+                     "62AB5D82-FDC1-4DC3-A9DD-070D1D495D97"):  # Program Files (x86), ProgramData
+            found.append(known_folder(guid, WINDOWS_DIR))
+        return found
+    found = [Path("/", name) for name in ("bin", "boot", "dev", "etc", "lib", "lib64", "opt", "proc", "root", "sbin",
+                                          "srv", "sys", "usr", "var", "tmp", "System", "Library", "Applications",
+                                          "private")]
+    run = Path("/run")
+    return found + [run / name for name in ("user", "lock", "systemd", "dbus")] + [HOME / "Library", HOME / ".config",
+                                                                                   HOME / ".local", HOME / ".cache"]
+
+
+def safe_folder(folder):
+    """A folder that may be watched: an existing folder that isn't the home folder,
+    a system folder, vt-quarantine's own or the quarantine folder, or inside one of
+    those. (A watched folder is where files may be put back.)"""
+    try:
+        folder = Path(os.path.abspath(folder))
+        if not folder.is_dir():
+            return False
+    except (OSError, ValueError):
+        return False
+    if folder == HOME or folder.parent == folder:  # the home folder, a drive's root
+        return False
+    inside = [folder, *folder.parents]
+    for blocked in (QUARANTINE, CONFIG_DIR, DATA_DIR, *system_folders()):
+        if blocked in inside:
+            return False
+    if MACOS and not MAC_PRIVATE_WATCH.exists() and any(p in inside for p in (DESKTOP_DIR, HOME / "Documents")):
+        return False  # would bring up a permission prompt nobody asked for
+    return True
+
+
+def add_folder(folder, learned=False):
+    """Watch one more folder. Returns why not (a sentence), or None."""
+    folder = Path(os.path.abspath(folder))
+    if not safe_folder(folder):
+        return f"{folder} can't be watched (a system folder, the home folder itself or not a folder)."
+    if folder in watched_folders(any_mode=True):
+        return None
+    data = read_watch_list()
+    if learned:
+        data["learned"] = [f for f in data["learned"] if f != str(folder)] + [str(folder)]
+    else:
+        data["learned"] = [f for f in data["learned"] if f != str(folder)]
+        data["added"].append(str(folder))
+    while len(data["added"]) + len(data["learned"]) > MAX_EXTRA_FOLDERS:
+        if not data["learned"]:
+            data["added"].pop()
+            return f"At most {MAX_EXTRA_FOLDERS} folders can be added."
+        data["learned"].pop(0)  # the oldest learned one makes room
+    save_watch_list(data)
+    log(f"watching {folder} too ({'learned from a browser' if learned else 'added in the settings'})")
+    return None
+
+
+def forget_folders():
+    save_watch_list({"added": [], "learned": []})
 
 
 def outside_candidate(entry):
-    """A new file worth checking: not hidden, not still downloading, not a shortcut,
-    and not a cloud file only listed here (reading it would download it)."""
+    """(worth a look, its size): not hidden, not still downloading, not a shortcut, and
+    not a cloud file only listed here (reading it would download it)."""
     name = entry.name
     if name.startswith(".") or not is_candidate(name) or Path(name).suffix.lower() in SHORTCUT_EXT:
-        return False
+        return False, 0
     try:
         st = entry.stat(follow_symlinks=False)
     except OSError:
+        return False, 0
+    if not stat.S_ISREG(st.st_mode) or getattr(st, "st_file_attributes", 0) & CLOUD_PLACEHOLDER:
+        return False, 0
+    return True, st.st_size
+
+
+def marked_download(path):
+    """Does the system say a browser downloaded this file?"""
+    if WINDOWS:
+        try:
+            with open(f"{path}:Zone.Identifier", encoding="utf-8", errors="replace") as f:
+                m = re.search(r"^ZoneId=(\d+)", f.read(), re.M)
+        except OSError:
+            return False
+        return bool(m) and int(m.group(1)) >= 3  # 3: internet, 4: restricted sites
+    if MACOS:
+        r = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", str(path)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        # "flags;time;agent;id": sandboxed apps mark their own files too, so it takes a
+        # known browser as the agent, or a download address (any browser saves one).
+        agent = r.stdout.split(";")[2].lower().replace(" ", "") if r.stdout.count(";") >= 2 else ""
+        if any(key in agent for key, _ in BROWSER_NAMES):
+            return True
+        return subprocess.run(["/usr/bin/xattr", "-p", "com.apple.metadata:kMDItemWhereFroms", str(path)],
+                              capture_output=True).returncode == 0
+    try:
+        return bool(os.getxattr(path, "user.xdg.origin.url", follow_symlinks=False))  # Chromium on Linux
+    except (OSError, AttributeError):
         return False
-    if not stat.S_ISREG(st.st_mode):
-        return False
-    return not getattr(st, "st_file_attributes", 0) & CLOUD_PLACEHOLDER
+
+
+def browser_save_folders(file):
+    """Folders a browser profile last saved to: Save As, or a download folder of its
+    own (not quarantine)."""
+    found = []
+    try:
+        if file.name == "prefs.js":
+            prefs = read_prefs(file)
+            values = [prefs.get("browser.download.lastDir")]
+            if prefs.get("browser.download.folderList") == "2":
+                values.append(prefs.get("browser.download.dir"))
+            for value in values:
+                if value and not is_quarantine(value):
+                    folder = json.loads(value)
+                    if isinstance(folder, str) and folder:
+                        found.append(folder)
+        else:
+            data = json.loads(file.read_text(encoding="utf-8"))
+            for section in ("savefile", "download"):
+                folder = (data.get(section) or {}).get("default_directory") if isinstance(data, dict) else None
+                if isinstance(folder, str) and folder and not same_path(folder):
+                    found.append(folder)
+    except (OSError, ValueError, AttributeError):
+        return []
+    return found
+
+
+class FinishedDownloads:
+    """Linux: files a browser just finished saving in the watched folders, through
+    inotify: its partial file ("name.part", ".crdownload", ...) renamed to the final
+    name. Firefox-based browsers mark nothing on Linux, so this is how they're seen."""
+
+    MOVED_FROM, MOVED_TO = 0x40, 0x80
+
+    def __init__(self):
+        import ctypes
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self.fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify isn't available")
+        self.folders = {}  # watch descriptor -> folder
+        self.partial = {}  # rename cookie -> partial name
+        self.done = set()  # finished downloads not looked at yet
+
+    def watch(self, folders):
+        for folder in folders:
+            if folder not in self.folders.values():
+                wd = self.libc.inotify_add_watch(self.fd, os.fsencode(folder), self.MOVED_FROM | self.MOVED_TO)
+                if wd >= 0:
+                    self.folders[wd] = folder
+
+    def read(self):
+        while True:
+            try:
+                data = os.read(self.fd, 65536)
+            except BlockingIOError:
+                return
+            pos = 0
+            while pos + 16 <= len(data):
+                wd, mask, cookie, size = struct.unpack_from("iIII", data, pos)
+                name = os.fsdecode(data[pos + 16:pos + 16 + size].rstrip(b"\0"))
+                pos += 16 + size
+                folder = self.folders.get(wd)
+                if folder is None:
+                    continue
+                if mask & self.MOVED_FROM and name.lower().endswith(PARTIAL_SUFFIXES):
+                    self.partial[cookie] = name
+                elif mask & self.MOVED_TO and self.partial.pop(cookie, None) is not None:
+                    self.done.add(folder / name)
+            if len(self.partial) > 1000:  # renames whose other half was never seen
+                self.partial.clear()
+
+    def take(self):
+        done, self.done = self.done, set()
+        return done
 
 
 class Outside:
     def __init__(self, q):
         self.q = q          # its questions and ours take turns on screen
-        self.seen = {}      # folder -> names there at the last look
+        self.seen = {}      # folder -> {name: size} at the last look
         self.queue = Queue()
+        self.queued = set()
         self.full_logged = False
+        self.sources = {}   # browser settings file -> its time at the last look
+        self.fresh = set()  # folders learned just now: a download already in them counts
+        self.finished = None
+        if not (WINDOWS or MACOS):
+            try:
+                self.finished = FinishedDownloads()
+            except OSError as e:
+                log(f"can't watch folders for finished downloads: {e}")
 
     def scan(self):
-        for folder in watched_folders():
+        if watch_mode() != "off":
+            self.learn()
+        folders = watched_folders()
+        found = []
+        if self.finished:
+            self.finished.watch(folders)
+            self.finished.read()
+            found += [p for p in self.finished.take() if p.parent in folders]
+        for folder in folders:
             try:
                 with os.scandir(folder) as entries:
                     entries = list(entries)
             except OSError:
                 self.seen.pop(folder, None)
                 continue
-            names = {e.name for e in entries}
-            first = folder not in self.seen
-            new = set() if first else names - self.seen[folder]
-            self.seen[folder] = names
+            before, now = self.seen.get(folder), {}
+            first_look = before is None and folder in self.fresh
+            self.fresh.discard(folder)
             for entry in entries:
-                if entry.name not in new or not outside_candidate(entry):
+                ok, size = outside_candidate(entry)
+                if not ok:
                     continue
-                path = Path(entry.path)
-                if path in RELEASED:
-                    RELEASED.discard(path)
-                    continue
-                if self.queue.qsize() >= OUTSIDE_QUEUE_MAX:
-                    if not self.full_logged:
-                        log(f"too many new files in {folder} at once: not checking the rest")
-                        self.full_logged = True
-                    continue
-                self.full_logged = False
-                self.queue.put(path)
+                now[entry.name] = size
+                if first_look and size and self.recent(entry) and marked_download(Path(entry.path)):
+                    found.append(Path(entry.path))  # the Save As that taught us this folder
+                # New, or an empty placeholder just filled in (Firefox makes one when a
+                # download starts and renames its .part over it at the end). A file
+                # that's edited later isn't taken again.
+                if before is not None and size and not before.get(entry.name) and marked_download(Path(entry.path)):
+                    found.append(Path(entry.path))
+            self.seen[folder] = now
+        for path in dict.fromkeys(found):
+            if path in RELEASED:
+                RELEASED.discard(path)
+            elif path not in self.queued:
+                self.enqueue(path)
+
+    @staticmethod
+    def recent(entry):
+        try:
+            return time.time() - entry.stat(follow_symlinks=False).st_mtime < LEARN_WINDOW
+        except OSError:
+            return False
+
+    def learn(self):
+        """Watch the folders the set-up browsers last saved to with Save As, or were set
+        to download into (a changed download folder the user kept)."""
+        try:
+            record = json.loads(BROWSER_SETUP.read_text())
+        except (OSError, ValueError):
+            return
+        files = [Path(e["profile"]) / "prefs.js" for e in record.get("firefox", []) if isinstance(e, dict) and "profile" in e]
+        files += [Path(e["prefs"]) for e in record.get("chromium", []) if isinstance(e, dict) and "prefs" in e]
+        for file in files:
+            try:
+                mtime = file.stat().st_mtime_ns
+            except OSError:
+                continue
+            if self.sources.get(file) == mtime:
+                continue
+            first = file not in self.sources  # at start: those saves happened before
+            self.sources[file] = mtime
+            for folder in browser_save_folders(file):
+                new = Path(os.path.abspath(folder)) not in watched_folders(any_mode=True)
+                if add_folder(folder, learned=True) is None and new and not first:
+                    self.fresh.add(Path(os.path.abspath(folder)))
+
+    def enqueue(self, path):
+        if self.queue.qsize() >= OUTSIDE_QUEUE_MAX:
+            if not self.full_logged:
+                log(f"too many new downloads in {path.parent} at once: not taking the rest")
+                self.full_logged = True
+            return
+        self.full_logged = False
+        self.queued.add(path)
+        self.queue.put(path)
 
     def work(self):
-        """Background: check queued files one at a time."""
+        """Background: deal with queued downloads one at a time."""
         while True:
             path = self.queue.get()
             try:
                 if wait_complete(path) and path not in RELEASED:
-                    self.check(path)
+                    if watch_mode() == "move":
+                        self.take_in(path)
+                    elif watch_mode() == "check":
+                        self.check(path)
             except Exception as e:
-                log(f"error checking {path}: {e}")
+                log(f"error on {path}: {e}")
             finally:
                 RELEASED.discard(path)
+                self.queued.discard(path)
+
+    @staticmethod
+    def take_in(path):
+        """Move a download into quarantine (locked there like any other), remembering
+        the folder it was saved to: it goes back there once it's clean or marked safe."""
+        make_quarantine()
+        dest = QUARANTINE / path.name
+        n = 1
+        while dest.exists() or dest.name in read_origins():
+            dest = QUARANTINE / f"{path.stem} ({n}){path.suffix}"
+            n += 1
+        set_origin(dest.name, path.parent)  # first: quarantine may pick the file up at once
+        try:
+            if WINDOWS:
+                retry_locked(lambda: win_move(path, dest))
+            else:
+                import errno
+                try:
+                    os.rename(path, dest)
+                except OSError as e:
+                    if e.errno != errno.EXDEV:
+                        raise
+                    # Another disk: copied in under a name quarantine ignores until it's whole.
+                    tmp, _ = copy_out(path, QUARANTINE, suffix=".part")
+                    os.replace(tmp, dest)
+                    path.unlink()
+        except BaseException:
+            set_origin(dest.name, None)
+            raise
+        lock_file(dest)
+        log(f"took {path} into quarantine")
 
     def check(self, path):
         sha = sha256(path, _open_nofollow)
@@ -680,11 +1037,11 @@ class Outside:
 
     def warn(self, path, sha, stats, results):
         _, _, _, body = detection_summary(stats, results)
-        where = "on the Desktop" if path.parent == DESKTOP_DIR else "in Downloads"
         with self.q.asking:
             while path.exists():
                 choice = notifier.notify(f"⚠ Flagged: {path.name}",
-                                         f"{body}\nIt was saved {where} without going through quarantine.",
+                                         f"{body}\nIt was saved to {html.escape(place_name(path.parent))} "
+                                         "without going through quarantine.",
                                          "critical", "security-low", [("report", "Show report"), ("delete", "Delete")])
                 if choice == "report":
                     open_url(report_url(sha))

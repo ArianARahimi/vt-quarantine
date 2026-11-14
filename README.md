@@ -74,8 +74,9 @@ installed. Details: [guide](docs/GUIDE.md#browser-setup).
   **Mark as safe**.
 - **Unknown to VirusTotal:** programs are uploaded for a scan; documents and
   archives ask first, since uploads can be seen by VirusTotal's paying users.
-- **Saved straight into Downloads or onto the Desktop** (a Save As box): checked
-  too, quietly. Only a flagged file brings a notification.
+- **Saved somewhere else** (Save As into Desktop, Music, ...): taken into
+  quarantine at once, checked, and put back where you saved it. Open the app
+  again for the settings.
 - **While you play fullscreen,** questions wait until you're done.
 
 More: [flagged files, Mark as safe, updates, privacy, commands](docs/GUIDE.md).
@@ -98,15 +99,18 @@ deleted. Files left in quarantine are unlocked, never deleted.
 
 - **A clean result isn't a guarantee.** New or targeted malware often has no
   detections yet. VirusTotal is one layer of protection, not a sandbox.
-- **Files saved outside quarantine are checked, not held.** New files saved
-  straight into Downloads, or onto the Desktop (not on macOS), are looked up but
-  not locked: a flagged one is reported, maybe after it was opened. Other
-  folders, subfolders and files there before vt-quarantine started aren't
-  checked; use `vt-quarantine --scan <file or folder>` for those.
-- **The browser drift notice and folder checks are new.** They were tested on
-  Linux and in Windows 11 and macOS 26 VMs, real notifications clicked through,
-  with VirusTotal answers simulated. On Windows the drift notice goes to the
-  notification centre after a few seconds; its buttons still work there.
+- **Downloads saved somewhere else are only caught in the watched folders**
+  (the standard ones, folders you added and ones learned from Save As; top level
+  only), and only after they're written: there's a moment before they're
+  locked. On Linux the first save into a new folder isn't caught. Elsewhere, use
+  `vt-quarantine --scan <file or folder>`.
+- **On Linux, a download saved somewhere else is recognized by the browser's
+  partial file being renamed** (Firefox-based browsers mark nothing on Linux). A
+  download tool that writes straight to the final name isn't caught there.
+- **Taking downloads in from other folders and the settings window are new.**
+  The drift notice and quiet checks were clicked through in Windows 11 and macOS
+  26 VMs with VirusTotal answers simulated; on Windows the drift notice goes to
+  the notification centre after a few seconds, where its buttons still work.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the

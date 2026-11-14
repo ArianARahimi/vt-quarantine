@@ -106,16 +106,49 @@ If you close a notification without choosing, the file stays locked in
 quarantine until the program restarts (at your next sign-in) and asks again. To
 take a file out, use the notification: one moved out by hand stays locked.
 
-### Files saved outside quarantine
+### Downloads saved somewhere else
 
-A Save As box, or a browser's download folder changed by hand, can put a file
-straight into Downloads or onto the Desktop. New files there are checked too,
-quietly: nothing is locked or moved, unknown programs are uploaded like in
-quarantine, and only a **flagged** file brings a notification (**Show report**,
-**Delete**). Files that were there before vt-quarantine started, hidden files,
-unfinished downloads, shortcuts and Windows cloud files not yet on the computer
-are skipped. On macOS only Downloads is checked: reading the Desktop needs a
-permission of its own. `vt-quarantine --watch-folders off` stops this.
+A Save As box, or a download folder changed in the browser, can put a download
+straight into another folder. vt-quarantine watches **Downloads, Desktop,
+Documents, Music, Pictures and Videos** (their top level). A download that lands
+there is **taken into quarantine at once**, locked and checked like any other,
+and goes **back to the folder you saved it to** once it's clean or you mark it
+safe. Flagged ones get the usual questions.
+
+Only downloads count, never your own files: what Windows or macOS marks as
+downloaded by a browser, or, on Linux, a file a browser has just finished saving
+(its `.part` or `.crdownload` file renamed to the final name). Files that were
+there before vt-quarantine started, hidden files, shortcuts and Windows cloud
+files not yet on the computer are left alone.
+
+On macOS, Desktop and Documents are only watched if you allow it in the
+settings (macOS asks for permission to read them); Downloads, Music, Pictures
+and Movies always are.
+
+Other folders are watched too once you save into them: the folder a browser
+last saved to with Save As (or a download folder you chose to keep) is learned
+and watched from then on, and you can add folders in the settings. At most 20
+such folders; never your home folder itself, the quarantine or system folders.
+On Windows and macOS the download that taught it a new folder is taken in too;
+on Linux only the next one.
+
+### Settings
+
+Open **VirusTotal Quarantine** again (Start menu on Windows, your app menu on
+Linux, the app on macOS, then **Settings…**) to choose what happens to downloads
+saved somewhere else:
+
+- **Move into quarantine** (the default): as described above.
+- **Check only:** looked up where they are; only a flagged one brings a
+  notification, possibly after it was opened.
+- **Off:** only the quarantine folder is checked.
+
+The same window lists the watched folders: **Add a folder…** opens your
+system's folder picker, **Forget extra folders** clears the added and learned
+ones.
+
+`vt-quarantine --settings` opens the same window, and `vt-quarantine
+--watch-folders move|check|off` sets it from a terminal.
 
 ### Games and other fullscreen apps
 
@@ -195,8 +228,10 @@ vt-quarantine -C, --check              fetch missing packages, show how much of 
 vt-quarantine -T, --test-notification  show a test notification with buttons
 vt-quarantine -A, --auto-update off    stop checking for updates (on: start again;
                                        quiet: update without a notification)
-vt-quarantine -W, --watch-folders off  only check the quarantine folder (on: also new
-                                       files in Downloads and on the Desktop)
+vt-quarantine -W, --watch-folders MODE downloads saved somewhere else: move (taken into
+                                       quarantine, then put back), check or off
+vt-quarantine --settings               open the settings window
+vt-quarantine --add-folder FOLDER      also watch FOLDER for downloads saved there
 vt-quarantine -F, --forget-safe        forget the files you marked safe
 vt-quarantine -V, --version
 ```

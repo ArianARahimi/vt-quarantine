@@ -38,6 +38,7 @@ UPGRADE_CODE = "{6F0C5D2B-8E4A-4B7F-9C1D-3A5E7B9D1F24}"
 # Per-version product codes, derived so the same version always gets the same one.
 PRODUCT_NS = uuid.UUID("2C9A4E61-7B3D-4F85-A0E2-5D8C1B6F9A37")
 COMPONENT_GUID = "{A47E2C19-5B8D-4E3F-9F61-0C2D4B8A6E15}"
+MENU_GUID = "{3D8B5A27-9C41-4F6E-B2D0-7E15A9C4F803}"  # the Start menu entry
 
 PY_VERSION = "3.14.10"
 PY_ZIP = f"python-{PY_VERSION}-embed-amd64.zip"
@@ -228,6 +229,15 @@ def wxs(ver, icon, script, python, wheels):
           </Directory>
         </Directory>
       </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <!-- Opening the app from the Start menu shows its settings. -->
+        <Component Id="Menu" Guid="{MENU_GUID}">
+          <Shortcut Id="MenuShortcut" Name="VirusTotal Quarantine" Description="Settings"
+                    Target="[#Pythonw]" Arguments="&quot;[#Script]&quot; --settings"
+                    WorkingDirectory="INSTALLDIR" Icon="vtq.ico"/>
+          <RegistryValue Root="HKCU" Key="Software\\vt-quarantine" Name="MenuShortcut" Type="integer" Value="1" KeyPath="yes"/>
+        </Component>
+      </Directory>
     </Directory>
     <CustomAction Id="SetPython" Property="PYTHONW" Value="[#Pythonw]"/>
     <!-- Stop the running copy; on a real uninstall also undo the browser setup and delete
@@ -251,7 +261,7 @@ def wxs(ver, icon, script, python, wheels):
       <Custom Action="StopForUpgrade" Sequence="3491">REMOVE="ALL" AND UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="Start" After="InstallFinalize">NOT REMOVE</Custom>
     </InstallExecuteSequence>
-    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/><ComponentRef Id="Wheels"/></Feature>
+    <Feature Id="Complete" Level="1"><ComponentRef Id="Main"/><ComponentRef Id="Python"/><ComponentRef Id="Wheels"/><ComponentRef Id="Menu"/></Feature>
   </Product>
 </Wix>
 """

@@ -24,6 +24,7 @@ stage() {
     # The distribution's Python, not whichever python3 comes first on PATH.
     sed -i '1s|^#!/usr/bin/env python3$|#!/usr/bin/python3|' "$1/usr/bin/vt-quarantine"
     install -Dm644 "$here/vt-quarantine.service" "$1/usr/lib/systemd/user/vt-quarantine.service"
+    install -Dm644 "$here/vt-quarantine.desktop" "$1/usr/share/applications/vt-quarantine.desktop"
     install -Dm644 "$root/README.md" "$1/usr/share/doc/vt-quarantine/README.md"
     install -Dm644 "$root/browser/user.js" "$1/usr/share/doc/vt-quarantine/user.js"
     install -Dm644 "$root/LICENSE" "$1$2"
@@ -75,6 +76,7 @@ cp -a "$work/rpm-root/." %{buildroot}/
 %files
 /usr/bin/vt-quarantine
 /usr/lib/systemd/user/vt-quarantine.service
+/usr/share/applications/vt-quarantine.desktop
 %doc /usr/share/doc/vt-quarantine
 %license /usr/share/licenses/vt-quarantine/LICENSE
 EOF

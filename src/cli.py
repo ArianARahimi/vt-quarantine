@@ -259,17 +259,131 @@ def run():
         time.sleep(POLL_SECONDS)
 
 
+WATCH_TEXT = {
+    "move": "taken into quarantine, checked, and put back where you saved them",
+    "check": "checked where they are; only a flagged one brings a notification",
+    "off": "left alone (only the quarantine folder is checked)",
+}
+
+
 def set_watch_folders(state):
-    if state == "off":
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        NO_FOLDER_WATCH.touch()
-        print("Only the quarantine folder is checked now.")
-    else:
-        NO_FOLDER_WATCH.unlink(missing_ok=True)
-        where = "Downloads" if MACOS else "Downloads or onto the Desktop"
-        print(f"New files saved straight into {where} are checked too. Only a flagged one "
-              "brings a notification; nothing there is moved.")
+    mode = "move" if state == "on" else state
+    set_watch_mode(mode)
+    print(f"Downloads saved outside quarantine are now {WATCH_TEXT[mode]}.")
     return 0
+
+
+def settings():
+    """The settings window: opening the app again (Start menu, app menu, Launchpad)."""
+    install_requirements()
+    dialogs = make_notifier()
+    mode = watch_mode()
+    choice = dialogs.notify(f"{APP} settings",
+                            "Downloads saved outside quarantine (with Save As, or a download folder "
+                            f"changed in the browser) are now {WATCH_TEXT[mode]}.",
+                            "critical", "preferences-system",
+                            [("move", "Move into quarantine"), ("check", "Check only"), ("off", "Off")])
+    if choice in WATCH_MODES:
+        set_watch_mode(choice)
+        mode = choice
+    if MACOS and mode != "off":
+        allow = dialogs.notify("Also watch Desktop and Documents?",
+                               "macOS asks once for permission to read them. Downloads, Music, Pictures "
+                               "and Movies are watched either way.", "critical", "",
+                               [("no", "No"), ("yes", "Yes")])
+        if allow == "yes":
+            MAC_PRIVATE_WATCH.parent.mkdir(parents=True, exist_ok=True)
+            MAC_PRIVATE_WATCH.touch()
+        elif allow == "no":
+            MAC_PRIVATE_WATCH.unlink(missing_ok=True)
+    while mode != "off":
+        lists = read_watch_list()
+        standard = "Downloads, Music, Pictures and Movies" if MACOS and not MAC_PRIVATE_WATCH.exists() else \
+            "Downloads, Desktop, Documents, Music, Pictures and Videos"
+        what = dialogs.notify("Watched folders",
+                              f"{standard}, plus {len(lists['added'])} you added and {len(lists['learned'])} "
+                              "learned from where your browsers last saved with Save As.", "critical", "folder",
+                              [("add", "Add a folder…"), ("forget", "Forget extra folders"), ("done", "Done")])
+        if what == "add":
+            folder = pick_folder()
+            if folder is False:
+                dialogs.notify("No folder picker here", "Add one from a terminal instead:\n"
+                               "vt-quarantine --add-folder FOLDER", "normal", "dialog-information")
+            elif folder and (problem := add_folder(folder)):
+                dialogs.notify("Can't watch that folder", html.escape(problem), "normal", "dialog-warning")
+            choice = choice or what
+            continue
+        if what == "forget":
+            forget_folders()
+            choice = choice or what
+            continue
+        break
+    if choice:
+        dialogs.tell("Settings saved", f"Downloads saved outside quarantine are {WATCH_TEXT[mode]}.",
+                     "security-high")
+    return 0
+
+
+def pick_folder():
+    """The system's own folder picker: the folder, None if cancelled, False if there's none."""
+    prompt = f"Choose a folder for {APP} to watch"
+    if MACOS:
+        # "activate": in front, with the keyboard, like the other dialogs.
+        r = subprocess.run(["osascript", "-e", "on run argv\nactivate\nreturn POSIX path of (choose folder with "
+                            "prompt (item 1 of argv))\nend run", prompt], capture_output=True, text=True)
+        return (r.stdout.strip() or None) if r.returncode == 0 else None
+    if WINDOWS:
+        return windows_pick_folder(prompt)
+    for cmd in (["kdialog", "--title", prompt, "--getexistingdirectory", str(HOME)],
+                ["zenity", "--file-selection", "--directory", f"--title={prompt}"]):
+        if shutil.which(cmd[0]):
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            return (r.stdout.strip() or None) if r.returncode == 0 else None
+    return False
+
+
+def windows_pick_folder(title):
+    """Windows' own folder dialog (shell32), with no helper program."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    class BrowseInfo(ctypes.Structure):
+        _fields_ = [("hwndOwner", w.HWND), ("pidlRoot", ctypes.c_void_p), ("pszDisplayName", w.LPWSTR),
+                    ("lpszTitle", w.LPCWSTR), ("ulFlags", w.UINT), ("lpfn", ctypes.c_void_p),
+                    ("lParam", w.LPARAM), ("iImage", ctypes.c_int)]
+
+    shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+    shell32.SHBrowseForFolderW.argtypes = (ctypes.POINTER(BrowseInfo),)
+    shell32.SHGetPathFromIDListW.argtypes = (ctypes.c_void_p, w.LPWSTR)
+    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+    user32 = ctypes.WinDLL("user32")
+    user32.SetWindowPos.argtypes = (w.HWND, w.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, w.UINT)
+    user32.SetForegroundWindow.argtypes = (w.HWND,)
+
+    @ctypes.WINFUNCTYPE(ctypes.c_int, w.HWND, w.UINT, w.LPARAM, w.LPARAM)
+    def on_event(hwnd, msg, lparam, data):
+        # Opened from a notification, the dialog would come up behind other windows:
+        # put it above them once (topmost, then not), then ask for the keyboard.
+        if msg == 1:  # BFFM_INITIALIZED
+            flags = 0x0001 | 0x0002 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+            user32.SetWindowPos(hwnd, w.HWND(-1), 0, 0, 0, 0, flags)
+            user32.SetWindowPos(hwnd, w.HWND(-2), 0, 0, 0, 0, flags)
+            user32.SetForegroundWindow(hwnd)
+        return 0
+
+    ole32.CoInitialize(None)
+    name = ctypes.create_unicode_buffer(260)
+    # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
+    info = BrowseInfo(None, None, ctypes.cast(name, w.LPWSTR), title, 0x0001 | 0x0040,
+                      ctypes.cast(on_event, ctypes.c_void_p), 0, 0)
+    pidl = shell32.SHBrowseForFolderW(ctypes.byref(info))
+    if not pidl:
+        return None
+    path = ctypes.create_unicode_buffer(260)
+    ok = shell32.SHGetPathFromIDListW(pidl, path)
+    ole32.CoTaskMemFree(pidl)
+    return path.value if ok and path.value else None
 
 
 def main():
@@ -305,9 +419,14 @@ def main():
     group.add_argument("-A", "--auto-update", choices=("on", "quiet", "off"),
                        help="daily update check: on (the default), quiet (no notification "
                             "after updating) or off")
-    group.add_argument("-W", "--watch-folders", choices=("on", "off"),
-                       help="also check new files saved straight into Downloads or onto the Desktop, "
-                            "quietly: on (the default) or off")
+    group.add_argument("-W", "--watch-folders", choices=("move", "check", "off", "on"),
+                       help="downloads saved outside quarantine (Save As): move (the default: taken "
+                            "into quarantine and put back once checked), check (only checked where "
+                            "they are) or off")
+    group.add_argument("--settings", action="store_true",
+                       help="open the settings window (what opening the app again does)")
+    group.add_argument("--add-folder", metavar="FOLDER",
+                       help="also watch this folder for downloads saved outside quarantine")
     args = parser.parse_args()
     if args.json and not args.scan:
         parser.error("--json only goes with --scan")
@@ -335,6 +454,12 @@ def main():
         return set_auto_update(args.auto_update)
     if args.watch_folders:
         return set_watch_folders(args.watch_folders)
+    if args.settings:
+        return settings()
+    if args.add_folder:
+        problem = add_folder(args.add_folder)
+        print(problem or f"Watching {os.path.abspath(args.add_folder)} for downloads too.")
+        return 1 if problem else 0
     if args.forget_safe:
         SAFE_LIST.unlink(missing_ok=True)
         print("Forgotten: files you marked safe get checked like any other again.")

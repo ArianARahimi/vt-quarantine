@@ -69,6 +69,8 @@ MIN_ENGINES = 20          # 0 detections from fewer engines than this is no verd
 STALE_DAYS = 30           # a clean verdict older than this gets a rescan for next time
 OUTSIDE_SCAN_SECONDS = 2  # how often Downloads and the Desktop are looked at
 OUTSIDE_QUEUE_MAX = 50    # new files waiting there at most (an archive unpacked loose)
+MAX_EXTRA_FOLDERS = 20    # folders watched besides the standard ones
+LEARN_WINDOW = 120        # a download this recent in a newly learned folder is taken in
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be
@@ -244,19 +246,37 @@ def downloads_dir():
     return HOME / "Downloads"
 
 
-def desktop_dir():
-    """The user's Desktop folder, found the same way."""
+# The user's own folders: (XDG name, Windows FOLDERID, folder name on macOS / by default).
+USER_DIRS = {
+    "DESKTOP": ("B4BFCC3A-DB2C-424C-B029-7FE99A87C641", "Desktop"),
+    "DOCUMENTS": ("FDD39AD0-238F-46AF-ADB4-6C85480369C7", "Documents"),
+    "MUSIC": ("4BD8D571-6D19-48D3-BE97-422220080E43", "Music"),
+    "PICTURES": ("33E28130-4E1E-4676-835A-98395C3BC3BB", "Pictures"),
+    "VIDEOS": ("18989B1D-99B5-455B-841C-AB7C74E4DDFC", "Videos"),
+}
+
+
+def user_dir(kind):
+    """One of USER_DIRS, which may have been moved or renamed."""
+    guid, name = USER_DIRS[kind]
     if WINDOWS:
-        return known_folder("B4BFCC3A-DB2C-424C-B029-7FE99A87C641", HOME / "Desktop")  # FOLDERID_Desktop
-    if not MACOS:
-        return xdg_user_dir("DESKTOP", HOME / "Desktop")
-    return HOME / "Desktop"
+        return known_folder(guid, HOME / name)
+    if MACOS:
+        return HOME / ("Movies" if kind == "VIDEOS" else name)
+    return xdg_user_dir(kind, HOME / name)
+
+
+def desktop_dir():
+    return user_dir("DESKTOP")
 
 
 RELEASE_DIR = downloads_dir()
 QUARANTINE = RELEASE_DIR / ".quarantine"
 DESKTOP_DIR = desktop_dir()
-NO_FOLDER_WATCH = CONFIG_DIR / "no-folder-watch"  # --watch-folders off
+FOLDER_WATCH = CONFIG_DIR / "folder-watch"  # move (the default), check or off
+MAC_PRIVATE_WATCH = CONFIG_DIR / "watch-desktop-documents"  # macOS: asks for permission
+ORIGINS = DATA_DIR / "origins.json"  # files taken into quarantine from elsewhere: where they go back
+WATCH_LIST = CONFIG_DIR / "watched-folders.json"  # folders added in the settings or learned from browsers
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key

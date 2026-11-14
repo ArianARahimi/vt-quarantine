@@ -330,7 +330,40 @@ def start_service():
     return "journalctl --user -u vt-quarantine -f"
 
 
+MENU_ENTRY = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "applications" / "vt-quarantine.desktop"
+MENU_MARKER = "# Written by vt-quarantine --install; --uninstall removes it."
+
+
+def desktop_quote(arg):
+    """One Exec= argument of a .desktop file, quoted the way the spec asks."""
+    return '"' + re.sub(r'(["`$\\])', r"\\\1", arg).replace("%", "%%") + '"'
+
+
+def write_menu_entry(script):
+    """Linux, without a package: an app menu entry that opens the settings."""
+    if MENU_ENTRY.exists() and MENU_MARKER not in MENU_ENTRY.read_text(errors="replace"):
+        return
+    MENU_ENTRY.parent.mkdir(parents=True, exist_ok=True)
+    MENU_ENTRY.write_text(f"""[Desktop Entry]
+{MENU_MARKER}
+Type=Application
+Name=VirusTotal Quarantine
+Comment=Settings for checking downloads on VirusTotal
+Exec={desktop_quote(sys.executable)} {desktop_quote(str(script))} --settings
+Icon=security-high
+Terminal=false
+Categories=System;Security;
+""")
+
+
+def remove_menu_entry():
+    with contextlib.suppress(OSError):
+        if MENU_MARKER in MENU_ENTRY.read_text(errors="replace"):
+            MENU_ENTRY.unlink()
+
+
 def autostart_linux(script):
+    write_menu_entry(script)
     if UNIT_FILE.exists() and UNIT_MARKER not in UNIT_FILE.read_text():
         sys.exit(f"{UNIT_FILE} exists and wasn't written by --install; leaving it alone.")
     UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -361,6 +394,7 @@ def autostart_linux_packaged():
         systemctl("disable", "vt-quarantine.service", check=False)
         UNIT_FILE.unlink()
         INSTALLED_SCRIPT.unlink(missing_ok=True)
+    remove_menu_entry()  # the package brings its own
     return start_service()
 
 
@@ -407,9 +441,12 @@ def install_app():
     installed = installed_version()
     if LAUNCH_AGENT.exists() and installed and installed >= parse_version(VERSION):
         remember_app_place(bundle)
-        if tell(f"{APP} is running", f"Every download saved to {QUARANTINE} is checked on VirusTotal "
-                "before it reaches your Downloads folder.", [("ok", "OK"), ("remove", "Uninstall…")]) == "remove" \
-                and tell(*REMOVE_QUESTION, [("cancel", "Cancel"), ("remove", "Remove")]) == "remove":
+        choice = tell(f"{APP} is running", f"Every download saved to {QUARANTINE} is checked on VirusTotal "
+                      "before it reaches your Downloads folder.",
+                      [("ok", "OK"), ("settings", "Settings…"), ("remove", "Uninstall…")])
+        if choice == "settings":
+            return settings()
+        if choice == "remove" and tell(*REMOVE_QUESTION, [("cancel", "Cancel"), ("remove", "Remove")]) == "remove":
             with contextlib.redirect_stdout(io.StringIO()):
                 uninstall()
             tell("vt-quarantine is removed", "You can move this app to the Trash.")
@@ -745,6 +782,7 @@ def uninstall(keep_data=False, stop=True):
         systemctl("daemon-reload", check=False)
     elif packaged():
         systemctl("disable", "--now", "vt-quarantine.service", check=False)
+    remove_menu_entry()
     INSTALLED_SCRIPT.unlink(missing_ok=True)
     print("vt-quarantine is stopped and no longer starts at sign-in.")
     if packaged():
