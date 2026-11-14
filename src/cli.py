@@ -427,7 +427,11 @@ def main():
                        help="open the settings window (what opening the app again does)")
     group.add_argument("--add-folder", metavar="FOLDER",
                        help="also watch this folder for downloads saved outside quarantine")
+    group.add_argument("--install-update", nargs=3, metavar=("PACKAGE", "SUMS", "SIG"),
+                       help=argparse.SUPPRESS)  # Linux packages: the root step of an update (pkexec)
     args = parser.parse_args()
+    if args.install_update:
+        return root_install_update(*args.install_update)
     if args.json and not args.scan:
         parser.error("--json only goes with --scan")
     if args.scan:

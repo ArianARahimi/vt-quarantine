@@ -19,13 +19,12 @@ UPDATED_MARKER = DATA_DIR / "updated"
 # it's an upgrade (so the data stays), but not every Windows Installer does (Wine).
 UPDATING_MARKER = DATA_DIR / "updating"
 DECLINED_UPDATE = CONFIG_DIR / "declined-update"  # a version the user said no to
-# Run as root with: the package, its SHA-256, the install command. The package waits
-# in a folder this user can write to while the password is typed, so root installs
-# its own copy, and only if that is the file that was verified.
-ROOT_INSTALL = ('d=$(mktemp -d) || exit 1; trap \'rm -rf "$d"\' EXIT; f="$d/${1##*/}"; cp -- "$1" "$f" || exit 1; '
-                'echo "$2  $f" | sha256sum -c - >/dev/null 2>&1 || '
-                '{ echo "the package is not the one that was verified: not installed" >&2; exit 1; }; '
-                'shift 2; "$@" "$f"')
+# Linux packages: pkexec runs `vt-quarantine --install-update` as root under this polkit
+# action (linux/vt-quarantine.policy), so the password prompt says what it's for.
+POLKIT_ACTION = "io.github.arianarahimi.vt-quarantine.update"
+PACKAGED_PROGRAM = "/usr/bin/vt-quarantine"
+PACKAGE_INSTALL = {"deb": ["apt-get", "install", "-y"], "rpm": ["dnf", "install", "-y"],
+                   "arch": ["pacman", "-U", "--noconfirm"]}
 
 
 def ed25519_verify(public, message, signature):
@@ -176,16 +175,69 @@ def find_update(kind, skip=None):
         return None
     sums = github_get(urls["SHA256SUMS"], 1024**2)
     signature = github_get(urls["SHA256SUMS.sig"], 1024)
+    expected = signed_sums(sums, signature, f"version {release['tag_name']}")
+    data = github_get(urls[name])
+    if hashlib.sha256(data).hexdigest() != expected.get(name):
+        raise RuntimeError(f"{name} doesn't match the signed checksum; not installing it")
+    return version, name, data, release.get("html_url", ""), (sums, signature)
+
+
+def signed_sums(sums, signature, what):
+    """A release's SHA256SUMS as {file: digest}, if a trusted key signed it."""
     if not any(ed25519_verify(bytes.fromhex(key), sums, signature) for key in RELEASE_KEYS):
-        raise RuntimeError(f"the signature on version {release['tag_name']} is not valid; not installing it")
+        raise RuntimeError(f"the signature on {what} is not valid; not installing it")
     expected = {}
     for line in sums.decode().splitlines():
         digest, _, file = line.partition("  ")
         expected[file.lstrip("*")] = digest
-    data = github_get(urls[name])
-    if hashlib.sha256(data).hexdigest() != expected.get(name):
-        raise RuntimeError(f"{name} doesn't match the signed checksum; not installing it")
-    return version, name, data, release.get("html_url", "")
+    return expected
+
+
+def read_regular(path, limit):
+    """A regular file's contents, at most `limit` bytes (root reading the user's files)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"{path} is larger than expected")
+    return data
+
+
+def root_install_update(package, sums, signature):
+    """Run as root by pkexec: install a package update. The files come from the user's
+    side, so everything is checked again here: signed by a release key, the package
+    for this system, newer than this version. A password typed for this can only
+    ever install a real release."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0 or not packaged():
+        print("only run by pkexec, from the installed package", file=sys.stderr)
+        return 2
+    name = os.path.basename(package)
+    try:
+        data = read_regular(package, UPDATE_MAX_BYTES)
+        expected = signed_sums(read_regular(sums, 1024**2), read_regular(signature, 1024), name)
+        m = re.fullmatch(r"vt-quarantine[-_](\d+\.\d+\.\d+)-.+", name)
+        version = parse_version(m.group(1)) if m else None
+        if not version or name != update_asset("package", version):
+            raise ValueError(f"{name} is not a vt-quarantine package for this system")
+        if version <= parse_version(VERSION):
+            raise ValueError(f"{name} is not newer than the installed {VERSION}")
+        if hashlib.sha256(data).hexdigest() != expected.get(name):
+            raise ValueError(f"{name} doesn't match the signed checksum")
+    except (OSError, RuntimeError, ValueError, UnicodeDecodeError) as e:
+        print(f"not installed: {e}", file=sys.stderr)
+        return 1
+    folder = Path(tempfile.mkdtemp(prefix="vt-quarantine-update-"))
+    try:
+        own = folder / name  # root's own copy: nobody else can change it now
+        own.write_bytes(data)
+        # apt reads it as its own unprivileged user.
+        os.chmod(folder, 0o755)  # noqa: S103  # nosec B103  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(own, 0o644)
+        return 0 if subprocess.run([*PACKAGE_INSTALL[package_format()], str(own)]).returncode == 0 else 1
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 class Updater:
@@ -218,7 +270,7 @@ class Updater:
         if found:
             self.install(kind, *found)
 
-    def install(self, kind, version, name, data, page):
+    def install(self, kind, version, name, data, page, signed):
         v = "{}.{}.{}".format(*version)
         if kind == "script":
             UPDATED_MARKER.write_text(v)
@@ -254,7 +306,7 @@ class Updater:
                 self.decline(v)
             if choice != "update":
                 return  # None (couldn't be shown): offered again at the next check
-            if not self.install_package(v, name, data):
+            if not self.install_package(v, name, data, signed):
                 return
             UPDATED_MARKER.write_text(v)
         log(f"updated to version {v}")
@@ -269,19 +321,14 @@ class Updater:
         except OSError as e:
             log(f"could not save that: {e}")
 
-    def install_package(self, v, name, data):
+    def install_package(self, v, name, data, signed):
         folder = Path(tempfile.mkdtemp(prefix="vt-quarantine-update-"))
         try:
-            package = folder / name
-            package.write_bytes(data)
-            # The package manager runs as root and must be able to read it; others
-            # may read it too (it's public), but only this user can change it.
-            os.chmod(folder, 0o755)  # noqa: S103  # nosec B103  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
-            os.chmod(package, 0o644)
-            cmd = {"deb": ["apt-get", "install", "-y"], "rpm": ["dnf", "install", "-y"],
-                   "arch": ["pacman", "-U", "--noconfirm"]}[package_format()]
-            r = subprocess.run(["pkexec", "/bin/sh", "-c", ROOT_INSTALL, "sh", str(package),
-                                hashlib.sha256(data).hexdigest(), *cmd], capture_output=True, text=True)
+            files = [folder / name, folder / "SHA256SUMS", folder / "SHA256SUMS.sig"]
+            for path, content in zip(files, (data, *signed)):
+                path.write_bytes(content)
+            r = subprocess.run(["pkexec", PACKAGED_PROGRAM, "--install-update", *map(str, files)],
+                               capture_output=True, text=True)
             # The password prompt was closed: 126, or (KDE's prompt) 127 "Not authorized".
             if r.returncode == 126 or r.returncode == 127 and "Not authorized" in r.stderr:
                 self.decline(v)
@@ -292,7 +339,7 @@ class Updater:
                                 "again tomorrow.", "normal", "dialog-error")
                 return False
             return True
-        except (OSError, KeyError) as e:
+        except OSError as e:
             log(f"package update failed: {e}")
             return False
         finally:
