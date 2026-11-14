@@ -910,6 +910,23 @@ def ask_to_set_folder(browser):
         return
 
 
+def lock_state():
+    """Which profiles are locked by a running browser, read from their lock files
+    (Safari: one pgrep), so a browser being closed or opened is noticed cheaply."""
+    state = [profile_in_use(folder) for _, folder in firefox_profiles()]
+    for _, root in chromium_roots():
+        if WINDOWS:
+            state.append(chromium_running(root))
+        else:
+            try:
+                state.append(os.readlink(root / "SingletonLock"))
+            except OSError:
+                state.append(None)
+    if MACOS:
+        state.append(safari_running())
+    return state
+
+
 def watch_browsers():
     """Background: the first run's setup, then quietly the same for browsers that
     were open (once they close), installed later, or given a new profile."""
@@ -918,10 +935,15 @@ def watch_browsers():
     except Exception as e:
         log(f"browser setup failed: {e}")
         waiting = True
+    seen, next_full = None, 0.0
     while True:
         # Often while a browser is waiting to be closed: it may be opened again soon.
+        # A full pass reads every profile, so between them only the locks are looked at.
         time.sleep(2 if waiting else 300)
         try:
+            locks = lock_state()  # before the pass, so a change during it isn't missed
+            if waiting and locks == seen and time.monotonic() < next_full:
+                continue
             try:
                 record = json.loads(BROWSER_SETUP.read_text())
             except (OSError, ValueError):
@@ -932,6 +954,7 @@ def watch_browsers():
             if json.dumps(record, sort_keys=True) != before:
                 save_browser_record(record)
             waiting = bool(still) or any(e.get("put_back") for e, *_ in drift_checks(record))
+            seen, next_full = locks, time.monotonic() + 60
         except Exception as e:
             log(f"browser setup failed: {e}")
 
