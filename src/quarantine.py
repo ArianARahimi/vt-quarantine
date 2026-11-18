@@ -111,19 +111,32 @@ def sha256(path, opener=None):
     return h.hexdigest()
 
 
+def partial_nearby(folder):
+    """Any download still in progress in this folder."""
+    try:
+        return any(e.name.lower().endswith(PARTIAL_SUFFIXES) for e in os.scandir(folder))
+    except OSError:
+        return False
+
+
 def wait_complete(path):
     """Wait until the browser has finished writing; False if the file went away."""
     part = path.with_name(path.name + ".part")
-    last = None
+    last, empty_for = None, 0
     while True:
         try:
             st = path.stat()
         except FileNotFoundError:
             return False
         sig = (st.st_size, st.st_mtime_ns)
-        if not part.exists() and sig == last:
+        # Firefox makes an empty placeholder, and its .part may have a random name
+        # (when the name came from a redirect), so an empty file waits for every
+        # partial download here, and a while longer.
+        busy = part.exists() or (st.st_size == 0 and partial_nearby(path.parent))
+        empty_for = empty_for + STABLE_SECONDS if sig == last and st.st_size == 0 else 0
+        if not busy and sig == last and (st.st_size or empty_for >= EMPTY_SECONDS):
             return True
-        last = None if part.exists() else sig
+        last = None if busy else sig
         # Browsers only give a download its own name once it's finished; waiting for
         # it to stop changing is for anything else that saves there.
         time.sleep(STABLE_SECONDS)

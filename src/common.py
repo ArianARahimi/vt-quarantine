@@ -57,6 +57,7 @@ USER_AGENT = f"vt-quarantine/{VERSION}"
 
 POLL_SECONDS = 0.5  # looking at the quarantine folder costs next to nothing
 STABLE_SECONDS = 1  # a download that hasn't changed for this long is finished
+EMPTY_SECONDS = 10  # an empty file waits longer: it may be a browser's placeholder
 UPDATE_CHECK_SECONDS = 24 * 3600
 CONFIRM_DETECTIONS = 10  # "Mark as safe" asks twice from this many malicious verdicts
 QUEUED_RECHECK_SECONDS = 60      # file known to VT but its analysis is still queued
