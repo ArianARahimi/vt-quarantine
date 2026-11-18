@@ -37,7 +37,7 @@ fi
 # VirusTotal hasn't seen are uploaded, as anyone downloading them would.
 echo "Checking every file on VirusTotal (a few minutes for new files):"
 python3 -I - "vt-quarantine-${tag#v}.py" $(ls | grep -vx SHA256SUMS) <<'EOF'
-import hashlib, importlib.machinery, importlib.util, json, os, sys, time, urllib.error, urllib.request, uuid
+import hashlib, importlib.machinery, importlib.util, json, os, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 loader = importlib.machinery.SourceFileLoader("vtq", sys.argv[1])
 spec = importlib.util.spec_from_loader("vtq", loader)
 vtq = importlib.util.module_from_spec(spec)
@@ -48,9 +48,12 @@ if not key:
     sys.exit("No VirusTotal API key: save one with vt-quarantine --set-key, or set VTQ_VT_KEY_FILE.")
 
 def api(path, data=None, headers=()):
+    # A path under the API, or a full address VirusTotal handed out (its big-file uploads).
+    url = path if path.startswith("https://") else "https://www.virustotal.com/api/v3/" + path
+    if urllib.parse.urlsplit(url).hostname not in ("www.virustotal.com", "bigfiles.virustotal.com"):
+        sys.exit(f"VirusTotal pointed somewhere unexpected: {url}")
     while True:
-        req = urllib.request.Request("https://www.virustotal.com/api/v3/" + path, data,
-                                     {"x-apikey": key, **dict(headers)})
+        req = urllib.request.Request(url, data, {"x-apikey": key, **dict(headers)})
         try:
             with urllib.request.urlopen(req, timeout=300) as r:
                 return json.load(r)
@@ -67,7 +70,7 @@ def upload(name, data):
             "Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
     url = "files"
     if len(data) > 32 * 1024 * 1024:
-        url = api("files/upload_url")["data"].split("/api/v3/", 1)[1]
+        url = api("files/upload_url")["data"]   # a full address on bigfiles.virustotal.com
     return api(url, body, {"Content-Type": f"multipart/form-data; boundary={boundary}"})["data"]["id"]
 
 bad = []
