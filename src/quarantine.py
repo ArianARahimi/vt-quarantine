@@ -622,7 +622,7 @@ class Quarantine:
                                    f"{name} is password-protected, so VirusTotal could not scan its "
                                    f"contents (0/{total} means nothing here).", "dialog-warning")
         if kind == "clean":
-            return self.release_unchanged(path, sha, sig, "Clean — moved to {}",
+            return self.release_unchanged(path, sha, sig, "Clean, moved to {}",
                                           f"{name} (0/{total} detections)")
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
@@ -634,7 +634,7 @@ class Quarantine:
         if not marked_safe(sha):
             return self.ask(path, sha, summary, body, icon, extra, report)
         log(f"{path.name} was marked safe before")
-        return self.release_unchanged(path, sha, sig, "Marked safe before — moved to {}",
+        return self.release_unchanged(path, sha, sig, "Marked safe before, moved to {}",
                                       html.escape(path.name))
 
     @staticmethod
@@ -693,7 +693,7 @@ class Quarantine:
                     return False
                 if sha:
                     remember_safe(sha, path.name)
-                tell_moved(f"Marked safe — moved to {place_name(dest.parent)}", html.escape(path.name), dest)
+                tell_moved(f"Marked safe, moved to {place_name(dest.parent)}", html.escape(path.name), dest)
                 return False
             if choice == "delete":
                 delete(path)

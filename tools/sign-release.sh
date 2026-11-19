@@ -26,6 +26,7 @@ rm -f SHA256SUMS.sig
 # Sign only what was checked: every file matches, and nothing is left unlisted.
 sha256sum --strict -c SHA256SUMS
 listed=$(awk '{print $2}' SHA256SUMS | sort)
+# shellcheck disable=SC2010  # release file names have no spaces or newlines
 present=$(ls | grep -vx SHA256SUMS | sort)
 if [ "$listed" != "$present" ]; then
     echo "SHA256SUMS doesn't list exactly the files in the release."
@@ -36,6 +37,7 @@ fi
 # Uses the API key vt-quarantine has saved (or the file in VTQ_VT_KEY_FILE); files
 # VirusTotal hasn't seen are uploaded, as anyone downloading them would.
 echo "Checking every file on VirusTotal (a few minutes for new files):"
+# shellcheck disable=SC2010,SC2046  # one argument per release file, as above
 python3 -I - "vt-quarantine-${tag#v}.py" $(ls | grep -vx SHA256SUMS) <<'EOF'
 import hashlib, importlib.machinery, importlib.util, json, os, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 loader = importlib.machinery.SourceFileLoader("vtq", sys.argv[1])

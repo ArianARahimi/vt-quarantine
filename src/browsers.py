@@ -444,6 +444,12 @@ CHROMIUM_PREFS = ("download.default_directory", "download.directory_upgrade",
                   "savefile.default_directory")
 
 
+def chromium_root(prefs):
+    """The user data folder a Preferences file belongs to (Local State is there). Older
+    Opera keeps its one profile in that folder itself."""
+    return prefs.parent if (prefs.parent / "Local State").exists() else prefs.parent.parent
+
+
 def chromium_download(prefs):
     """The "download" section of a Chromium Preferences file ({} if unreadable)."""
     try:
@@ -689,7 +695,7 @@ def firefox_auto_open_pass(record):
 def chromium_auto_open_pass(record):
     for entry in record["chromium"]:
         prefs = Path(entry["prefs"])
-        root = prefs.parent.parent
+        root = chromium_root(prefs)
         if not prefs.is_file():
             continue
         try:
@@ -796,7 +802,7 @@ def drift_checks(record):
         prefs = Path(entry["prefs"])
         if prefs.is_file():
             yield (entry, entry.get("browser", "Your browser"), lambda p=prefs: chromium_folder(p),
-                   lambda p=prefs: chromium_running(p.parent.parent))
+                   lambda p=prefs: chromium_running(chromium_root(p)))
     if MACOS and isinstance(record.get("safari"), dict):
         yield record["safari"], "Safari", safari_folder, safari_running
 
@@ -993,7 +999,7 @@ def undo_browser_setup():
         if not prefs.is_file():
             continue
         browser = entry.get("browser", "the browser")
-        if chromium_running(prefs.parent.parent):
+        if chromium_running(chromium_root(prefs)):
             print(f"{browser} is open, so its downloads still go to {QUARANTINE}: "
                   f"change that in its settings (Downloads)")
             left.append(browser)

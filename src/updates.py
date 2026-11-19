@@ -105,7 +105,7 @@ def use_system_tls():
 
 def github_get(url, limit=UPDATE_MAX_BYTES):
     check_update_url(url, "refusing to fetch an update from")
-    req =urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
                                                "Accept": "application/vnd.github+json"})
     with github_opener.open(req, timeout=120) as resp:
         data = resp.read(limit + 1)
