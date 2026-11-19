@@ -33,12 +33,32 @@ if [ "$listed" != "$present" ]; then
     exit 1
 fi
 
+# Signed first, so the passphrase is asked for straight away instead of after minutes of
+# VirusTotal checks (a passphrase pasted early lands on the screen). The signature stays
+# here until VirusTotal has passed every file; if it doesn't, it's deleted with $work.
+echo "Signing (asks for the key's passphrase, if it has one):"
+openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
+
+# The program in this release must accept the signature, or it couldn't update
+# to the release after it either.
+python3 -I -B - "vt-quarantine-${tag#v}.py" <<'EOF'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("vtq", sys.argv[1])
+spec = importlib.util.spec_from_loader("vtq", loader)
+vtq = importlib.util.module_from_spec(spec)
+loader.exec_module(vtq)
+sums, sig = open("SHA256SUMS", "rb").read(), open("SHA256SUMS.sig", "rb").read()
+if not any(vtq.ed25519_verify(bytes.fromhex(k), sums, sig) for k in vtq.RELEASE_KEYS):
+    sys.exit("The program in this release doesn't accept this key (check RELEASE_KEYS).")
+print("Signature checks out with the release's own RELEASE_KEYS.")
+EOF
+
 # A program that checks downloads on VirusTotal can't ship anything VirusTotal flags.
 # Uses the API key vt-quarantine has saved (or the file in VTQ_VT_KEY_FILE); files
 # VirusTotal hasn't seen are uploaded, as anyone downloading them would.
 echo "Checking every file on VirusTotal (a few minutes for new files):"
 # shellcheck disable=SC2010,SC2046  # one argument per release file, as above
-python3 -I - "vt-quarantine-${tag#v}.py" $(ls | grep -vx SHA256SUMS) <<'EOF'
+python3 -I -B - "vt-quarantine-${tag#v}.py" $(ls | grep -vxE 'SHA256SUMS(\.sig)?') <<'EOF'
 import hashlib, importlib.machinery, importlib.util, json, os, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 loader = importlib.machinery.SourceFileLoader("vtq", sys.argv[1])
 spec = importlib.util.spec_from_loader("vtq", loader)
@@ -104,27 +124,11 @@ for name in sys.argv[2:]:
     if flags or total == 0:
         bad.append(f"{name}: https://www.virustotal.com/gui/file/{sha}")
 if bad:
-    sys.exit("Not signed. VirusTotal flags:\n  " + "\n  ".join(bad) +
+    sys.exit("Nothing uploaded, the signature is discarded. VirusTotal flags:\n  " + "\n  ".join(bad) +
              "\nFix it, or report the false positive to those engines, then run this again.")
 EOF
 
-echo "Signing (asks for the key's passphrase, if it has one):"
-openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
-
-# The program in this release must accept the signature, or it couldn't update
-# to the release after it either.
-python3 -I - "vt-quarantine-${tag#v}.py" <<'EOF'
-import importlib.machinery, importlib.util, sys
-loader = importlib.machinery.SourceFileLoader("vtq", sys.argv[1])
-spec = importlib.util.spec_from_loader("vtq", loader)
-vtq = importlib.util.module_from_spec(spec)
-loader.exec_module(vtq)
-sums, sig = open("SHA256SUMS", "rb").read(), open("SHA256SUMS.sig", "rb").read()
-if not any(vtq.ed25519_verify(bytes.fromhex(k), sums, sig) for k in vtq.RELEASE_KEYS):
-    sys.exit("The program in this release doesn't accept this key (check RELEASE_KEYS).")
-print("Signature checks out with the release's own RELEASE_KEYS.")
-EOF
-
+# Only now, with every file clean, does the signature leave this computer.
 gh release upload "$tag" SHA256SUMS.sig -R "$repo"
 printf 'Publish %s now? Installed copies update to it within a day. [y/N] ' "$tag"
 read -r answer
