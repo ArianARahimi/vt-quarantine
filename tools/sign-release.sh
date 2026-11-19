@@ -74,6 +74,7 @@ def api(path, data=None, headers=()):
     url = path if path.startswith("https://") else "https://www.virustotal.com/api/v3/" + path
     if urllib.parse.urlsplit(url).hostname not in ("www.virustotal.com", "bigfiles.virustotal.com"):
         sys.exit(f"VirusTotal pointed somewhere unexpected: {url}")
+    server_errors = 0
     while True:
         req = urllib.request.Request(url, data, {"x-apikey": key, **dict(headers)})
         try:
@@ -82,6 +83,11 @@ def api(path, data=None, headers=()):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
+            if e.code in (500, 502, 503, 504) and server_errors < 4:  # VirusTotal having a moment
+                server_errors += 1
+                print(f"  (VirusTotal answered {e.code}, trying again in 30 s)", flush=True)
+                time.sleep(30)
+                continue
             if e.code != 429:  # the free API allows 4 a minute
                 raise
         time.sleep(20)
