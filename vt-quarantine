@@ -2685,8 +2685,8 @@ class Updater:
         kind = update_kind()
         if not kind or (NO_AUTO_UPDATE.exists() and not asked) or not RELEASE_KEYS:
             if asked:
-                notifier.tell("Updates aren't handled here", "This copy is updated another way "
-                              "(a package manager, or by hand).", "dialog-information")
+                notifier.tell("Updates come from your package manager",
+                              "This copy is updated by your package manager or by hand.", "dialog-information")
             return
         if not asked:
             # Neither ask nor install in the middle of a game: wait it out (in this
@@ -2703,7 +2703,7 @@ class Updater:
         if found:
             self.install(kind, *found)
         elif asked:
-            notifier.tell("No update", f"{APP} {VERSION} is the newest version.", "security-high")
+            notifier.tell("No update", f"You're on the latest version ({VERSION}).", "security-high")
 
     def install(self, kind, version, name, data, page, signed):
         v = "{}.{}.{}".format(*version)
@@ -5114,7 +5114,7 @@ def settings():
     dialogs = make_notifier()
     mode = watch_mode()
     choice = dialogs.notify(f"{APP} settings",
-                            (f"{APP} wasn't running, so it was started. " if started else "") +
+                            (f"{APP} wasn't running, so it's been started. " if started else "") +
                             "Downloads saved outside quarantine (with Save As, or a download folder "
                             f"changed in the browser) are now {WATCH_TEXT[mode]}.",
                             "critical", "preferences-system",
@@ -5280,7 +5280,7 @@ class Tray:
                 if folder and (problem := add_folder(folder)):
                     notifier.tell("Can't watch that folder", html.escape(problem), "dialog-warning")
                 elif folder:
-                    notifier.tell("Watching another folder", html.escape(folder), "security-high")
+                    notifier.tell("Now watching", html.escape(folder), "security-high")
             elif ident == 21:
                 forget_folders()
             elif ident == 30:
@@ -5439,11 +5439,10 @@ class Tray:
         return menu
 
     def confirm_quit(self):
-        busy = " The download being checked is finished first." if self.busy() else ""
+        busy = " It finishes checking the current download first." if self.busy() else ""
         # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND; IDYES = 6
-        return self.u.MessageBoxW(None, f"New downloads will wait in quarantine, unchecked, until {APP} runs "
-                                  f"again (at sign-in, or from the Start menu).{busy}", f"Quit {APP}?",
-                                  0x4 | 0x30 | 0x100 | 0x10000) == 6
+        return self.u.MessageBoxW(None, f"New downloads will wait in quarantine, unchecked, until you start it "
+                                  f"again.{busy}", f"Quit {APP}?", 0x4 | 0x30 | 0x100 | 0x10000) == 6
 
 
 def show_tray_menu(wait):
@@ -5638,8 +5637,8 @@ def wait_for_key():
     if prompt is not None:
         notifier.close(prompt)
     if warned:
-        notifier.tell(f"{APP} is on", "It checks every download before it reaches your Downloads folder, "
-                      "and starts by itself when you sign in.", "security-high")
+        notifier.tell(f"{APP} is on", "It checks every download before it lands in your Downloads folder, "
+                      "and starts when you log in.", "security-high")
     return key
 
 

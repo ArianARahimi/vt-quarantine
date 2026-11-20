@@ -172,8 +172,8 @@ def wait_for_key():
     if prompt is not None:
         notifier.close(prompt)
     if warned:
-        notifier.tell(f"{APP} is on", "It checks every download before it reaches your Downloads folder, "
-                      "and starts by itself when you sign in.", "security-high")
+        notifier.tell(f"{APP} is on", "It checks every download before it lands in your Downloads folder, "
+                      "and starts when you log in.", "security-high")
     return key
 
 

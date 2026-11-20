@@ -260,8 +260,8 @@ class Updater:
         kind = update_kind()
         if not kind or (NO_AUTO_UPDATE.exists() and not asked) or not RELEASE_KEYS:
             if asked:
-                notifier.tell("Updates aren't handled here", "This copy is updated another way "
-                              "(a package manager, or by hand).", "dialog-information")
+                notifier.tell("Updates come from your package manager",
+                              "This copy is updated by your package manager or by hand.", "dialog-information")
             return
         if not asked:
             # Neither ask nor install in the middle of a game: wait it out (in this
@@ -278,7 +278,7 @@ class Updater:
         if found:
             self.install(kind, *found)
         elif asked:
-            notifier.tell("No update", f"{APP} {VERSION} is the newest version.", "security-high")
+            notifier.tell("No update", f"You're on the latest version ({VERSION}).", "security-high")
 
     def install(self, kind, version, name, data, page, signed):
         v = "{}.{}.{}".format(*version)

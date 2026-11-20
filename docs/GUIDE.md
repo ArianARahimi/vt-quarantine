@@ -134,23 +134,18 @@ on Linux only the next one.
 
 ### Settings
 
-On Windows, the settings are in the tray menu (the Start menu entry opens it
-too). On macOS and Linux, open the app again for **Settings…**.
+On Windows, click the tray icon, or open VirusTotal Quarantine from the Start menu. On macOS and Linux, open the app again and pick **Settings…**.
 
-| Setting | |
-|---|---|
-| **Downloads saved elsewhere** | **Move into quarantine** (default), **Check only** (only a flagged one brings a notification, possibly after it was opened) or **Off** |
-| **Watched folders** | **Add a folder…**, **Forget extra folders** (the added and learned ones) |
-| **Run on startup** (Windows) | Same switch as Task Manager's Startup apps. While off, downloads wait in quarantine until it runs |
+- **Downloads saved elsewhere:** **Move into quarantine** checks them and puts them back where you saved them. **Check only** leaves them where they are and only notifies if the file is flagged. **Off** ignores all.
+- **Watched folders:** **Add a folder…** watches a custom folder. **Forget extra folders** clears all custom folders, and any it picked up from Save As.
+- **Run on startup** (Windows): on by default, and the same switch as in Task Manager. While it's off, downloads wait in quarantine until you open it.
 
 `vt-quarantine --settings` opens the same window, and `vt-quarantine
 --watch-folders move|check|off` sets it from a terminal.
 
 ### Startup
 
-vt-quarantine runs on startup. Until it has an API key, it asks for one at
-every start. On Windows, opening it from the Start menu starts it again if it
-isn't running.
+It starts when you log in. If it doesn't have your API key yet, it asks for it every time it starts. On Windows, opening it from the Start menu starts it back up if it isn't running.
 
 ### Games and other fullscreen apps
 

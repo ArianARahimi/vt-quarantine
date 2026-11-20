@@ -23,7 +23,7 @@ def settings():
     dialogs = make_notifier()
     mode = watch_mode()
     choice = dialogs.notify(f"{APP} settings",
-                            (f"{APP} wasn't running, so it was started. " if started else "") +
+                            (f"{APP} wasn't running, so it's been started. " if started else "") +
                             "Downloads saved outside quarantine (with Save As, or a download folder "
                             f"changed in the browser) are now {WATCH_TEXT[mode]}.",
                             "critical", "preferences-system",
@@ -189,7 +189,7 @@ class Tray:
                 if folder and (problem := add_folder(folder)):
                     notifier.tell("Can't watch that folder", html.escape(problem), "dialog-warning")
                 elif folder:
-                    notifier.tell("Watching another folder", html.escape(folder), "security-high")
+                    notifier.tell("Now watching", html.escape(folder), "security-high")
             elif ident == 21:
                 forget_folders()
             elif ident == 30:
@@ -348,11 +348,10 @@ class Tray:
         return menu
 
     def confirm_quit(self):
-        busy = " The download being checked is finished first." if self.busy() else ""
+        busy = " It finishes checking the current download first." if self.busy() else ""
         # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND; IDYES = 6
-        return self.u.MessageBoxW(None, f"New downloads will wait in quarantine, unchecked, until {APP} runs "
-                                  f"again (at sign-in, or from the Start menu).{busy}", f"Quit {APP}?",
-                                  0x4 | 0x30 | 0x100 | 0x10000) == 6
+        return self.u.MessageBoxW(None, f"New downloads will wait in quarantine, unchecked, until you start it "
+                                  f"again.{busy}", f"Quit {APP}?", 0x4 | 0x30 | 0x100 | 0x10000) == 6
 
 
 def show_tray_menu(wait):
