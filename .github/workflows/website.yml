@@ -1,0 +1,31 @@
+name: Website
+
+# Redeploys composersoftware.net as soon as a release is published, so its version
+# and What's new are current straight away (its download buttons always point at
+# the latest release). SITE_DEPLOY_TOKEN may only run that site's workflows.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Redeploy composersoftware.net
+        env:
+          TOKEN: ${{ secrets.SITE_DEPLOY_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::SITE_DEPLOY_TOKEN isn't set: the website updates on its daily run instead."
+            exit 0
+          fi
+          curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/ArianARahimi/composersoftware-site/actions/workflows/deploy.yml/dispatches \
+            -d '{"ref":"main"}'
+          echo "Website deploy started."
