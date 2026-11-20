@@ -555,9 +555,13 @@ def _install_requirements():
     if str(target) not in sys.path:
         # Ahead of site-packages, so the pinned versions are the ones used.
         sys.path.insert(0, str(target))
-    if target.is_dir():  # only ever appears complete (renamed into place)
+    done = target / ".complete"  # written last: an uninstall can leave a folder half-deleted
+    if done.is_file():
         return True
     try:
+        if target.is_dir():
+            log(f"{target} is incomplete: installing its packages again")
+            shutil.rmtree(target)
         LIB_ROOT.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix="staging-", dir=LIB_ROOT))
         try:
@@ -571,10 +575,11 @@ def _install_requirements():
                     log(f"downloading {picked[0]}")
                     data = download_wheel(name, *picked)
                 unpack_wheel(data, picked[0], staging)
+            (staging / done.name).touch()
             try:
                 os.replace(staging, target)
             except OSError:
-                if not target.is_dir():  # not just another copy finishing first
+                if not done.is_file():  # not just another copy finishing first
                     raise
         finally:
             shutil.rmtree(staging, ignore_errors=True)
