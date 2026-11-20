@@ -139,14 +139,14 @@ WM_SHOW_MENU = 0x8002  # sent by the Start menu entry
 MODE_LABELS = (("move", "Move into quarantine"), ("check", "Check only"), ("off", "Off"))
 
 
-def tray_menu(status, mode, extras, startup, waiting_for_key, can_update):
-    """The menu as (id, label, flags) rows, None for a line between groups."""
-    rows = [(1, status, {"grayed"}), (2, "Open quarantine folder", set())]
+def tray_menu(mode, extras, startup, waiting_for_key, can_update):
+    """The menu as (id, label, flags) rows, (label, rows) for a submenu, None for a line."""
+    rows = [(2, "Open quarantine folder", set())]
     if waiting_for_key:
         rows.append((3, "Enter API key…", set()))
-    rows += [None, (4, "Downloads saved elsewhere:", {"grayed"})]
-    rows += [(10 + i, label, {"radio", "checked"} if m == mode else {"radio"}) for i, (m, label) in enumerate(MODE_LABELS)]
-    rows += [(20, "Add a folder…", set()), (21, "Forget extra folders", set() if extras else {"grayed"}), None,
+    modes = [(10 + i, label, {"radio", "checked"} if m == mode else {"radio"}) for i, (m, label) in enumerate(MODE_LABELS)]
+    folders = [(20, "Add a folder…", set()), (21, "Forget extra folders", set() if extras else {"grayed"})]
+    rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders), None,
              (30, "Start with Windows", {"checked"} if startup else set())]
     if can_update:
         rows.append((40, "Check for updates", set()))
@@ -204,7 +204,7 @@ class Tray:
 
     def menu_rows(self):
         lists = read_watch_list()
-        return tray_menu(self.status, watch_mode(), bool(lists["added"] or lists["learned"]), startup_enabled(),
+        return tray_menu(watch_mode(), bool(lists["added"] or lists["learned"]), startup_enabled(),
                          self.waiting_for_key, self.updater is not None)
 
     # The Win32 side: untestable off Windows, so it only draws and passes clicks on.
@@ -313,19 +313,7 @@ class Tray:
     def show_menu(self, at_icon):
         ctypes, u = self.ctypes, self.u
         w = ctypes.wintypes
-        rows = self.menu_rows()
-        menu = u.CreatePopupMenu()
-        for row in rows:
-            if row is None:
-                u.AppendMenuW(menu, 0x800, 0, None)  # MF_SEPARATOR
-                continue
-            ident, label, flags = row
-            u.AppendMenuW(menu, (0x1 if "grayed" in flags else 0) | (0x8 if "checked" in flags and "radio" not in flags
-                                                                     else 0), ident, label)
-        radios = [r[0] for r in rows if r and "radio" in r[2]]
-        chosen = [r[0] for r in rows if r and {"radio", "checked"} <= r[2]]
-        if radios and chosen:
-            u.CheckMenuRadioItem(menu, radios[0], radios[-1], chosen[0], 0)  # MF_BYCOMMAND
+        menu = self.build_menu(self.menu_rows())
         point = w.POINT()
         u.GetCursorPos(ctypes.byref(point))
         if at_icon:  # opened from the Start menu: by the icon, not wherever the mouse is
@@ -340,6 +328,24 @@ class Tray:
         u.DestroyMenu(menu)
         if choice:
             threading.Thread(target=self.act, args=(choice,), daemon=True).start()
+
+    def build_menu(self, rows):
+        u = self.u
+        menu = u.CreatePopupMenu()
+        for row in rows:
+            if row is None:
+                u.AppendMenuW(menu, 0x800, 0, None)  # MF_SEPARATOR
+            elif len(row) == 2:
+                u.AppendMenuW(menu, 0x10, self.build_menu(row[1]), row[0])  # MF_POPUP: freed with its menu
+            else:
+                ident, label, flags = row
+                checked = "checked" in flags and "radio" not in flags
+                u.AppendMenuW(menu, (0x1 if "grayed" in flags else 0) | (0x8 if checked else 0), ident, label)
+        radios = [r[0] for r in rows if r and len(r) == 3 and "radio" in r[2]]
+        chosen = [r[0] for r in rows if r and len(r) == 3 and {"radio", "checked"} <= r[2]]
+        if radios and chosen:
+            u.CheckMenuRadioItem(menu, radios[0], radios[-1], chosen[0], 0)  # a dot, MF_BYCOMMAND
+        return menu
 
     def confirm_quit(self):
         busy = " The download being checked is finished first." if self.busy() else ""
