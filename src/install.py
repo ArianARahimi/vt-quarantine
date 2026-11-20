@@ -5,6 +5,7 @@
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\vt-quarantine"
+STARTUP_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 SETUP_KEY = r"Software\vt-quarantine"  # written by the Windows installer (.msi)
 AUMID_KEY = r"Software\Classes\AppUserModelId\vt-quarantine"
 UNIT_FILE = xdg_config() / "systemd" / "user" / "vt-quarantine.service"
@@ -667,18 +668,47 @@ def start_if_stopped():
     if not lock:
         return False  # running
     lock.close()
+    ensure_run_key()
+    start_detached([str(gui_python()), str(INSTALLED_SCRIPT)])
+    log("wasn't running: started from the settings")
+    return True
+
+
+def ensure_run_key():
+    """Windows: put back the autostart entry if it went missing."""
     import winreg
-    command = f'"{gui_python()}" "{INSTALLED_SCRIPT}"'
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
                             winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
         try:
             winreg.QueryValueEx(key, "vt-quarantine")
         except FileNotFoundError:
-            winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_SZ, command)
+            winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_SZ, f'"{gui_python()}" "{INSTALLED_SCRIPT}"')
             log("the autostart entry was missing: put it back")
-    start_detached([str(gui_python()), str(INSTALLED_SCRIPT)])
-    log("wasn't running: started from the settings")
-    return True
+
+
+def startup_enabled():
+    """Windows: on unless turned off, here or in Task Manager's Startup apps (the same switch)."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY) as key:
+            data, _ = winreg.QueryValueEx(key, "vt-quarantine")
+    except FileNotFoundError:
+        return True
+    return not (isinstance(data, bytes) and data[:1] and data[0] & 1)  # 2 on, 3 off
+
+
+def set_startup(on):
+    """Windows: the Startup apps switch, so the installer's own autostart entry stays as it is."""
+    import winreg
+    if on:
+        ensure_run_key()
+        with contextlib.suppress(FileNotFoundError), \
+                winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, "vt-quarantine")
+        return
+    filetime = (time.time_ns() // 100 + 116444736000000000).to_bytes(8, "little")  # when it was turned off
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_BINARY, b"\x03\x00\x00\x00" + filetime)
 
 
 def stop_running():
@@ -788,9 +818,10 @@ def uninstall(keep_data=False, stop=True):
     keep_data = keep_data or updating()
     if WINDOWS:
         import winreg
-        with contextlib.suppress(FileNotFoundError), \
-                winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, "vt-quarantine")
+        for run_key in (RUN_KEY, STARTUP_APPROVED_KEY):
+            with contextlib.suppress(FileNotFoundError), \
+                    winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, "vt-quarantine")
         for path in (AUMID_KEY, UNINSTALL_KEY):
             with contextlib.suppress(FileNotFoundError):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)

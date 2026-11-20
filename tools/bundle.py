@@ -26,6 +26,7 @@ PARTS = (
     "browsers",    # pointing browsers at the quarantine folder
     "keystore",    # the API key in the system's password store
     "install",     # --install, --uninstall, autostart, the macOS app
+    "settings",    # the settings, the Windows tray icon, folder pickers
     "cli",         # --scan, run() and the command line
 )
 HEADER = "#: "  # a part's leading "#: " lines describe the part; they're left out

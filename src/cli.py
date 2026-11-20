@@ -145,12 +145,18 @@ def wait_for_key():
     on Windows and macOS with the key window, by itself at every start (a notification
     alone is easily missed), elsewhere with how to set it. A key saved any other way
     (--set-key, the key file) counts too. Once one arrives, a note says it's working."""
-    saved = threading.Event()  # the key window saved one: look again straight away
+    saved = KEY_SAVED
     prompt, warned = None, False
     while not (key := startup_key()):
+        if tray and tray.quit.is_set():
+            tray.remove()
+            log("quit from the tray icon")
+            raise SystemExit(0)
         if not warned:
             warned = True
             log(f"no API key at {KEY_FILE}")
+            if tray:
+                tray.set_status("Waiting for your API key", waiting_for_key=True)
             wait_for_free_screen("the API key warning")
             if WINDOWS or MACOS:
                 if key_window():
@@ -167,7 +173,8 @@ def wait_for_key():
         notifier.close(prompt)
     if warned:
         notifier.tell(f"{APP} is on", "It checks every download before it reaches your Downloads folder, "
-                      "and starts by itself when you sign in.", "security-high")
+                      "and starts by itself when you sign in." +
+                      (" Its icon and settings are by the clock, under ^." if tray else ""), "security-high")
     return key
 
 
@@ -190,7 +197,7 @@ def offer_key_window(saved):
 # --- Main --------------------------------------------------------------------
 
 def run():
-    global notifier, api_key
+    global notifier, api_key, tray
     refuse_root()
     setup_logging()
     lock = acquire_lock()
@@ -198,6 +205,9 @@ def run():
         log("already running")
         return 0
     (DATA_DIR / "pid").write_text(str(os.getpid()))
+    if WINDOWS:
+        tray = Tray()
+        tray.start()
     UPDATING_MARKER.unlink(missing_ok=True)  # it went through, or didn't
     make_quarantine()
     prune_origins()
@@ -236,7 +246,12 @@ def run():
     updater, own_file = Updater(), FileWatch()
     outside, outside_due = Outside(q), 0
     threading.Thread(target=outside.work, daemon=True).start()
+    if tray:
+        tray.updater, tray.busy = updater, lambda: bool(q.active)
     while True:
+        if tray:
+            n = len(q.active)
+            tray.set_status(f"Checking {n} download{'s' if n > 1 else ''}" if n else "Watching your downloads")
         try:
             q.scan()
         except Exception as e:
@@ -252,20 +267,19 @@ def run():
         if own_file.replaced():
             log("this program was replaced (a package upgraded by hand?)")
             updater.restart.set()
-        if updater.restart.is_set():
+        quitting = tray is not None and tray.quit.is_set()
+        if updater.restart.is_set() or quitting:
             with q.lock:
                 idle = not q.active
             if idle:  # never in the middle of checking a download
+                if tray:
+                    tray.remove()
+                if quitting:
+                    log("quit from the tray icon")
+                    return 0
                 log("restarting into the new version")
                 restart(lock)
         time.sleep(POLL_SECONDS)
-
-
-WATCH_TEXT = {
-    "move": "taken into quarantine, checked, and put back where you saved them",
-    "check": "checked where they are; only a flagged one brings a notification",
-    "off": "left alone (only the quarantine folder is checked)",
-}
 
 
 def set_watch_folders(state):
@@ -273,122 +287,6 @@ def set_watch_folders(state):
     set_watch_mode(mode)
     print(f"Downloads saved outside quarantine are now {WATCH_TEXT[mode]}.")
     return 0
-
-
-def settings():
-    """The settings window: opening the app again (Start menu, app menu, Launchpad)."""
-    setup_logging()
-    started = start_if_stopped()
-    install_requirements()
-    dialogs = make_notifier()
-    mode = watch_mode()
-    choice = dialogs.notify(f"{APP} settings",
-                            (f"{APP} wasn't running, so it was started. " if started else "") +
-                            "Downloads saved outside quarantine (with Save As, or a download folder "
-                            f"changed in the browser) are now {WATCH_TEXT[mode]}.",
-                            "critical", "preferences-system",
-                            [("move", "Move into quarantine"), ("check", "Check only"), ("off", "Off")])
-    if choice in WATCH_MODES:
-        set_watch_mode(choice)
-        mode = choice
-    if MACOS and mode != "off":
-        allow = dialogs.notify("Also watch Desktop and Documents?",
-                               "macOS asks once for permission to read them. Downloads, Music, Pictures "
-                               "and Movies are watched either way.", "critical", "",
-                               [("no", "No"), ("yes", "Yes")])
-        if allow == "yes":
-            MAC_PRIVATE_WATCH.parent.mkdir(parents=True, exist_ok=True)
-            MAC_PRIVATE_WATCH.touch()
-        elif allow == "no":
-            MAC_PRIVATE_WATCH.unlink(missing_ok=True)
-    while mode != "off":
-        lists = read_watch_list()
-        standard = "Downloads, Music, Pictures and Movies" if MACOS and not MAC_PRIVATE_WATCH.exists() else \
-            "Downloads, Desktop, Documents, Music, Pictures and Videos"
-        what = dialogs.notify("Watched folders",
-                              f"{standard}, plus {len(lists['added'])} you added and {len(lists['learned'])} "
-                              "learned from where your browsers last saved with Save As.", "critical", "folder",
-                              [("add", "Add a folder…"), ("forget", "Forget extra folders"), ("done", "Done")])
-        if what == "add":
-            folder = pick_folder()
-            if folder is False:
-                dialogs.notify("No folder picker here", "Add one from a terminal instead:\n"
-                               "vt-quarantine --add-folder FOLDER", "normal", "dialog-information")
-            elif folder and (problem := add_folder(folder)):
-                dialogs.notify("Can't watch that folder", html.escape(problem), "normal", "dialog-warning")
-            choice = choice or what
-            continue
-        if what == "forget":
-            forget_folders()
-            choice = choice or what
-            continue
-        break
-    if choice:
-        dialogs.tell("Settings saved", f"Downloads saved outside quarantine are {WATCH_TEXT[mode]}.",
-                     "security-high")
-    return 0
-
-
-def pick_folder():
-    """The system's own folder picker: the folder, None if cancelled, False if there's none."""
-    prompt = f"Choose a folder for {APP} to watch"
-    if MACOS:
-        # "activate": in front, with the keyboard, like the other dialogs.
-        r = subprocess.run(["osascript", "-e", "on run argv\nactivate\nreturn POSIX path of (choose folder with "
-                            "prompt (item 1 of argv))\nend run", prompt], capture_output=True, text=True)
-        return (r.stdout.strip() or None) if r.returncode == 0 else None
-    if WINDOWS:
-        return windows_pick_folder(prompt)
-    for cmd in (["kdialog", "--title", prompt, "--getexistingdirectory", str(HOME)],
-                ["zenity", "--file-selection", "--directory", f"--title={prompt}"]):
-        if shutil.which(cmd[0]):
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            return (r.stdout.strip() or None) if r.returncode == 0 else None
-    return False
-
-
-def windows_pick_folder(title):
-    """Windows' own folder dialog (shell32), with no helper program."""
-    import ctypes
-    from ctypes import wintypes as w
-
-    class BrowseInfo(ctypes.Structure):
-        _fields_ = [("hwndOwner", w.HWND), ("pidlRoot", ctypes.c_void_p), ("pszDisplayName", w.LPWSTR),
-                    ("lpszTitle", w.LPCWSTR), ("ulFlags", w.UINT), ("lpfn", ctypes.c_void_p),
-                    ("lParam", w.LPARAM), ("iImage", ctypes.c_int)]
-
-    shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
-    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
-    shell32.SHBrowseForFolderW.argtypes = (ctypes.POINTER(BrowseInfo),)
-    shell32.SHGetPathFromIDListW.argtypes = (ctypes.c_void_p, w.LPWSTR)
-    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
-    user32 = ctypes.WinDLL("user32")
-    user32.SetWindowPos.argtypes = (w.HWND, w.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, w.UINT)
-    user32.SetForegroundWindow.argtypes = (w.HWND,)
-
-    @ctypes.WINFUNCTYPE(ctypes.c_int, w.HWND, w.UINT, w.LPARAM, w.LPARAM)
-    def on_event(hwnd, msg, lparam, data):
-        # Opened from a notification, the dialog would come up behind other windows:
-        # put it above them once (topmost, then not), then ask for the keyboard.
-        if msg == 1:  # BFFM_INITIALIZED
-            flags = 0x0001 | 0x0002 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
-            user32.SetWindowPos(hwnd, w.HWND(-1), 0, 0, 0, 0, flags)
-            user32.SetWindowPos(hwnd, w.HWND(-2), 0, 0, 0, 0, flags)
-            user32.SetForegroundWindow(hwnd)
-        return 0
-
-    ole32.CoInitialize(None)
-    name = ctypes.create_unicode_buffer(260)
-    # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
-    info = BrowseInfo(None, None, ctypes.cast(name, w.LPWSTR), title, 0x0001 | 0x0040,
-                      ctypes.cast(on_event, ctypes.c_void_p), 0, 0)
-    pidl = shell32.SHBrowseForFolderW(ctypes.byref(info))
-    if not pidl:
-        return None
-    path = ctypes.create_unicode_buffer(260)
-    ok = shell32.SHGetPathFromIDListW(pidl, path)
-    ole32.CoTaskMemFree(pidl)
-    return path.value if ok and path.value else None
 
 
 def main():

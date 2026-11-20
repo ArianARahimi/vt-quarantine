@@ -23,7 +23,8 @@ you, with its report a click away.
 </p>
 
 - **Free and open source** (MIT), for **Windows 10/11, macOS and Linux**
-- **No window, no tray icon:** everything happens in notifications
+- **No window:** everything happens in notifications, and on Windows an icon by
+  the clock shows what it's doing and holds the settings
 - **Sets up your browsers by itself:** Chrome, Edge, Firefox, Safari, Brave and more
 - **Careful by default:** files stay locked until they're checked, and private
   files are never uploaded without asking
@@ -75,8 +76,8 @@ installed. Details: [guide](docs/GUIDE.md#browser-setup).
 - **Unknown to VirusTotal:** programs are uploaded for a scan; documents and
   archives ask first, since uploads can be seen by VirusTotal's paying users.
 - **Saved somewhere else** (Save As into Desktop, Music, ...): taken into
-  quarantine at once, checked, and put back where you saved it. Open the app
-  again for the settings.
+  quarantine at once, checked, and put back where you saved it. For the
+  settings, click the icon by the clock (Windows) or open the app again.
 - **While you play fullscreen,** questions wait until you're done.
 
 More: [flagged files, Mark as safe, updates, privacy, commands](docs/GUIDE.md).
@@ -111,6 +112,10 @@ deleted. Files left in quarantine are unlocked, never deleted.
   The drift notice and quiet checks were clicked through in Windows 11 and macOS
   26 VMs with VirusTotal answers simulated; on Windows the drift notice goes to
   the notification centre after a few seconds, where its buttons still work.
+- **The icon by the clock is Windows only,** and Windows 11 keeps a new icon under
+  the ^ arrow until you drag it next to the clock. Tested in a Windows 11 VM: its
+  menu, Start with Windows (the same switch as Task Manager's Startup apps),
+  Quit, and coming back after Explorer restarts.
 - **Opening a download from the browser while it's being checked fails.** It's
   locked for those seconds, so on Windows the browser's list of downloads shows
   "Windows cannot access the specified device, path, or file". Wait for the

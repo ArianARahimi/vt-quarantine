@@ -253,22 +253,32 @@ class Updater:
     def due(self):
         return time.monotonic() >= self.next_check
 
-    def check(self):
+    def check(self, asked=False):
+        """asked: someone chose Check for updates, so it goes ahead even with automatic
+        updates off, right away, and says what it found."""
         self.next_check = time.monotonic() + UPDATE_CHECK_SECONDS
         kind = update_kind()
-        if not kind or NO_AUTO_UPDATE.exists() or not RELEASE_KEYS:
+        if not kind or (NO_AUTO_UPDATE.exists() and not asked) or not RELEASE_KEYS:
+            if asked:
+                notifier.tell("Updates aren't handled here", "This copy is updated another way "
+                              "(a package manager, or by hand).", "dialog-information")
             return
-        # Neither ask nor install in the middle of a game: wait it out (in this
-        # thread), then go ahead straight away.
-        wait_for_free_screen("the update check")
+        if not asked:
+            # Neither ask nor install in the middle of a game: wait it out (in this
+            # thread), then go ahead straight away.
+            wait_for_free_screen("the update check")
         try:
             # Someone who said no to a version isn't asked again until the next one.
-            found = find_update(kind, declined_version() if kind == "package" else None)
+            found = find_update(kind, declined_version() if kind == "package" and not asked else None)
         except (OSError, RuntimeError, ValueError, KeyError) as e:
             log(f"update check failed: {e}")
+            if asked:
+                notifier.tell("Couldn't check for updates", html.escape(str(e)), "dialog-warning")
             return
         if found:
             self.install(kind, *found)
+        elif asked:
+            notifier.tell("No update", f"{APP} {VERSION} is the newest version.", "security-high")
 
     def install(self, kind, version, name, data, page, signed):
         v = "{}.{}.{}".format(*version)

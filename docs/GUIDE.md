@@ -134,9 +134,11 @@ on Linux only the next one.
 
 ### Settings
 
-Open **VirusTotal Quarantine** again (Start menu on Windows, your app menu on
-Linux, the app on macOS, then **Settings…**) to choose what happens to downloads
-saved somewhere else:
+On Windows, click the icon by the clock (under the ^ arrow until you drag it
+out), or open **VirusTotal Quarantine** from the Start menu, which opens the
+same menu. Elsewhere, open it again (your app menu on Linux, the app on macOS,
+then **Settings…**). There you choose what happens to downloads saved somewhere
+else:
 
 - **Move into quarantine** (the default): as described above.
 - **Check only:** looked up where they are; only a flagged one brings a
@@ -146,6 +148,12 @@ saved somewhere else:
 The same window lists the watched folders: **Add a folder…** opens your
 system's folder picker, **Forget extra folders** clears the added and learned
 ones.
+
+The Windows menu also has **Open quarantine folder**, **Start with Windows**
+(the same switch as Startup apps in Task Manager; turned off, downloads wait in
+quarantine until you start it), **Check for updates** and **Quit**. Its
+tooltip says what it's doing: watching, checking a download, or waiting for
+your API key.
 
 `vt-quarantine --settings` opens the same window, and `vt-quarantine
 --watch-folders move|check|off` sets it from a terminal.
