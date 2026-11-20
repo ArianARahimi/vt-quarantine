@@ -867,8 +867,7 @@ def point_back(entry, browser):
 
 
 def save_browser_record(record):
-    BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
-    BROWSER_SETUP.write_text(json.dumps(record, indent=1))
+    save_file(BROWSER_SETUP, json.dumps(record, indent=1))
 
 
 def setup_browsers():

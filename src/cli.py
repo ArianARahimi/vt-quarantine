@@ -276,10 +276,13 @@ def set_watch_folders(state):
 
 def settings():
     """The settings window: opening the app again (Start menu, app menu, Launchpad)."""
+    setup_logging()
+    started = start_if_stopped()
     install_requirements()
     dialogs = make_notifier()
     mode = watch_mode()
     choice = dialogs.notify(f"{APP} settings",
+                            (f"{APP} wasn't running, so it was started. " if started else "") +
                             "Downloads saved outside quarantine (with Save As, or a download folder "
                             f"changed in the browser) are now {WATCH_TEXT[mode]}.",
                             "critical", "preferences-system",

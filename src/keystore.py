@@ -53,10 +53,7 @@ class DpapiStore(LocalStore):
             return ""
 
     def put(self, key):
-        DPAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = DPAPI_FILE.with_name(DPAPI_FILE.name + ".new")
-        tmp.write_bytes(self.crypt(key.encode(), True))
-        os.replace(tmp, DPAPI_FILE)
+        save_file(DPAPI_FILE, self.crypt(key.encode(), True))
 
     def delete(self):
         DPAPI_FILE.unlink(missing_ok=True)

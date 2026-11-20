@@ -435,6 +435,8 @@ def remember_safe(sha, name):
     SAFE_LIST.parent.mkdir(parents=True, exist_ok=True)
     with open(SAFE_LIST, "a") as f:
         f.write(f"{sha}  {' '.join(name.split())}\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def tell_moved(summary, body, dest):
@@ -732,8 +734,7 @@ def watch_mode():
 
 
 def set_watch_mode(mode):
-    FOLDER_WATCH.parent.mkdir(parents=True, exist_ok=True)
-    FOLDER_WATCH.write_text(mode)
+    save_file(FOLDER_WATCH, mode)
     NO_FOLDER_WATCH.unlink(missing_ok=True)
 
 
@@ -765,10 +766,7 @@ def read_watch_list():
 
 
 def save_watch_list(data):
-    WATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
-    tmp = WATCH_LIST.with_name(WATCH_LIST.name + ".new")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, WATCH_LIST)
+    save_file(WATCH_LIST, json.dumps(data))
 
 
 def system_folders():

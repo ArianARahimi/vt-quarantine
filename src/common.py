@@ -314,6 +314,18 @@ def setup_logging():
     sys.stdout = sys.stderr = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
 
 
+def save_file(path, data):
+    """Write a settings file so that a crash or power cut leaves the old one or the new
+    one, never an empty or half-written one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    with open(tmp, "wb") as f:
+        f.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def refuse_root():
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         sys.exit("Don't run vt-quarantine as root: run it as the user whose downloads it checks.")

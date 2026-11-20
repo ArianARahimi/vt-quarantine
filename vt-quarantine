@@ -314,6 +314,18 @@ def setup_logging():
     sys.stdout = sys.stderr = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
 
 
+def save_file(path, data):
+    """Write a settings file so that a crash or power cut leaves the old one or the new
+    one, never an empty or half-written one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    with open(tmp, "wb") as f:
+        f.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def refuse_root():
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         sys.exit("Don't run vt-quarantine as root: run it as the user whose downloads it checks.")
@@ -1686,6 +1698,8 @@ def remember_safe(sha, name):
     SAFE_LIST.parent.mkdir(parents=True, exist_ok=True)
     with open(SAFE_LIST, "a") as f:
         f.write(f"{sha}  {' '.join(name.split())}\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def tell_moved(summary, body, dest):
@@ -1983,8 +1997,7 @@ def watch_mode():
 
 
 def set_watch_mode(mode):
-    FOLDER_WATCH.parent.mkdir(parents=True, exist_ok=True)
-    FOLDER_WATCH.write_text(mode)
+    save_file(FOLDER_WATCH, mode)
     NO_FOLDER_WATCH.unlink(missing_ok=True)
 
 
@@ -2016,10 +2029,7 @@ def read_watch_list():
 
 
 def save_watch_list(data):
-    WATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
-    tmp = WATCH_LIST.with_name(WATCH_LIST.name + ".new")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, WATCH_LIST)
+    save_file(WATCH_LIST, json.dumps(data))
 
 
 def system_folders():
@@ -3708,8 +3718,7 @@ def point_back(entry, browser):
 
 
 def save_browser_record(record):
-    BROWSER_SETUP.parent.mkdir(parents=True, exist_ok=True)
-    BROWSER_SETUP.write_text(json.dumps(record, indent=1))
+    save_file(BROWSER_SETUP, json.dumps(record, indent=1))
 
 
 def setup_browsers():
@@ -3906,10 +3915,7 @@ class DpapiStore(LocalStore):
             return ""
 
     def put(self, key):
-        DPAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = DPAPI_FILE.with_name(DPAPI_FILE.name + ".new")
-        tmp.write_bytes(self.crypt(key.encode(), True))
-        os.replace(tmp, DPAPI_FILE)
+        save_file(DPAPI_FILE, self.crypt(key.encode(), True))
 
     def delete(self):
         DPAPI_FILE.unlink(missing_ok=True)
@@ -4835,6 +4841,30 @@ def autostart_windows(script):
     return str(LOG_FILE)
 
 
+def start_if_stopped():
+    """Windows: nothing restarts the program after a crash or a sign-in where it didn't
+    start, so opening it from the Start menu does, and puts back a lost autostart entry.
+    True if it had to be started."""
+    if not WINDOWS or not INSTALLED_SCRIPT.exists():
+        return False
+    lock = acquire_lock()
+    if not lock:
+        return False  # running
+    lock.close()
+    import winreg
+    command = f'"{gui_python()}" "{INSTALLED_SCRIPT}"'
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+        try:
+            winreg.QueryValueEx(key, "vt-quarantine")
+        except FileNotFoundError:
+            winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_SZ, command)
+            log("the autostart entry was missing: put it back")
+    start_detached([str(gui_python()), str(INSTALLED_SCRIPT)])
+    log("wasn't running: started from the settings")
+    return True
+
+
 def stop_running():
     """Stop a running instance found through the lock (Windows has no service manager here)."""
     import signal
@@ -5297,10 +5327,13 @@ def set_watch_folders(state):
 
 def settings():
     """The settings window: opening the app again (Start menu, app menu, Launchpad)."""
+    setup_logging()
+    started = start_if_stopped()
     install_requirements()
     dialogs = make_notifier()
     mode = watch_mode()
     choice = dialogs.notify(f"{APP} settings",
+                            (f"{APP} wasn't running, so it was started. " if started else "") +
                             "Downloads saved outside quarantine (with Save As, or a download folder "
                             f"changed in the browser) are now {WATCH_TEXT[mode]}.",
                             "critical", "preferences-system",

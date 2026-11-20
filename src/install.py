@@ -657,6 +657,30 @@ def autostart_windows(script):
     return str(LOG_FILE)
 
 
+def start_if_stopped():
+    """Windows: nothing restarts the program after a crash or a sign-in where it didn't
+    start, so opening it from the Start menu does, and puts back a lost autostart entry.
+    True if it had to be started."""
+    if not WINDOWS or not INSTALLED_SCRIPT.exists():
+        return False
+    lock = acquire_lock()
+    if not lock:
+        return False  # running
+    lock.close()
+    import winreg
+    command = f'"{gui_python()}" "{INSTALLED_SCRIPT}"'
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+        try:
+            winreg.QueryValueEx(key, "vt-quarantine")
+        except FileNotFoundError:
+            winreg.SetValueEx(key, "vt-quarantine", 0, winreg.REG_SZ, command)
+            log("the autostart entry was missing: put it back")
+    start_detached([str(gui_python()), str(INSTALLED_SCRIPT)])
+    log("wasn't running: started from the settings")
+    return True
+
+
 def stop_running():
     """Stop a running instance found through the lock (Windows has no service manager here)."""
     import signal
