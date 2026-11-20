@@ -5238,7 +5238,7 @@ def tray_menu(mode, extras, startup, waiting_for_key, can_update):
     modes = [(10 + i, label, {"radio", "checked"} if m == mode else {"radio"}) for i, (m, label) in enumerate(MODE_LABELS)]
     folders = [(20, "Add a folder…", set()), (21, "Forget extra folders", set() if extras else {"grayed"})]
     rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders), None,
-             (30, "Start with Windows", {"checked"} if startup else set())]
+             (30, "Run on startup", {"checked"} if startup else set())]
     if can_update:
         rows.append((40, "Check for updates", set()))
     return rows + [None, (50, "Quit", set())]

@@ -78,6 +78,9 @@ installed. Details: [guide](docs/GUIDE.md#browser-setup).
 - **Saved somewhere else** (Save As into Desktop, Music, ...): taken into
   quarantine at once, checked, and put back where you saved it. For the
   settings, click the icon by the clock (Windows) or open the app again.
+- **Always on:** it starts when you sign in. On Windows, **Run on startup** in
+  its menu turns that off, and opening it from the Start menu starts it again
+  if it stopped.
 - **While you play fullscreen,** questions wait until you're done.
 
 More: [flagged files, Mark as safe, updates, privacy, commands](docs/GUIDE.md).
@@ -114,7 +117,7 @@ deleted. Files left in quarantine are unlocked, never deleted.
   the notification centre after a few seconds, where its buttons still work.
 - **The icon by the clock is Windows only,** and Windows 11 keeps a new icon under
   the ^ arrow until you drag it next to the clock. Tested in a Windows 11 VM: its
-  menu, Start with Windows (the same switch as Task Manager's Startup apps),
+  menu, Run on startup (the same switch as Task Manager's Startup apps),
   Quit, and coming back after Explorer restarts.
 - **Opening a download from the browser while it's being checked fails.** It's
   locked for those seconds, so on Windows the browser's list of downloads shows
