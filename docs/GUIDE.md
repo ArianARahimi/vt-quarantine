@@ -134,38 +134,23 @@ on Linux only the next one.
 
 ### Settings
 
-On Windows, click the icon by the clock (under the ^ arrow until you drag it
-out), or open **VirusTotal Quarantine** from the Start menu, which opens the
-same menu. Its tooltip says what it's doing: watching, checking a download, or
-waiting for your API key.
+On Windows, the settings are in the tray menu (the Start menu entry opens it
+too). On macOS and Linux, open the app again for **Settings…**.
 
-| Menu item | What it does |
+| Setting | |
 |---|---|
-| **Open quarantine folder** | Shows the hidden folder downloads wait in |
-| **Enter API key…** | Only while there's no key yet |
-| **Downloads saved elsewhere** | **Move into quarantine** (the default), **Check only** (looked up where they are; only a flagged one brings a notification, possibly after it was opened) or **Off** (only the quarantine folder is checked) |
-| **Watched folders** | **Add a folder…** opens the folder picker, **Forget extra folders** clears the added and learned ones |
-| **Run on startup** | The same switch as Startup apps in Task Manager. Turned off, downloads wait in quarantine until you start it |
-| **Check for updates** | Looks now and says what it found, even with automatic updates off |
-| **Quit** | Asks first. A download being checked is finished before it stops |
-
-On macOS and Linux, open it again (the app on macOS, your app menu on Linux)
-for **Settings…**: the same choices for downloads saved elsewhere and the
-watched folders.
+| **Downloads saved elsewhere** | **Move into quarantine** (default), **Check only** (only a flagged one brings a notification, possibly after it was opened) or **Off** |
+| **Watched folders** | **Add a folder…**, **Forget extra folders** (the added and learned ones) |
+| **Run on startup** (Windows) | Same switch as Task Manager's Startup apps. While off, downloads wait in quarantine until it runs |
 
 `vt-quarantine --settings` opens the same window, and `vt-quarantine
 --watch-folders move|check|off` sets it from a terminal.
 
-### Starting and staying on
+### Startup
 
-vt-quarantine starts when you sign in. Until it has your API key, the key
-window opens by itself at every start, and once the key is saved a short note
-says it's on.
-
-On Windows, if it isn't running (closed with Quit, or stopped by a crash),
-opening it from the Start menu starts it again, and puts back its autostart
-entry if that went missing. Its settings and API key are saved so that a crash
-or power cut leaves the old ones or the new ones, never a half-written file.
+vt-quarantine runs on startup. Until it has an API key, it asks for one at
+every start. On Windows, opening it from the Start menu starts it again if it
+isn't running.
 
 ### Games and other fullscreen apps
 

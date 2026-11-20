@@ -154,7 +154,7 @@ def tray_menu(mode, extras, startup, waiting_for_key, can_update):
 
 
 class Tray:
-    """The icon by the clock: its tooltip says what it's doing, and clicking it opens
+    """The tray icon: its tooltip says what it's doing, and clicking it opens
     the settings. Plain Win32 through ctypes, on a thread of its own."""
 
     def __init__(self):

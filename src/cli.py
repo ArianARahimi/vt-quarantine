@@ -173,8 +173,7 @@ def wait_for_key():
         notifier.close(prompt)
     if warned:
         notifier.tell(f"{APP} is on", "It checks every download before it reaches your Downloads folder, "
-                      "and starts by itself when you sign in." +
-                      (" Its icon and settings are by the clock, under ^." if tray else ""), "security-high")
+                      "and starts by itself when you sign in.", "security-high")
     return key
 
 
