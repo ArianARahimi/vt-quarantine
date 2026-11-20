@@ -111,6 +111,10 @@ deleted. Files left in quarantine are unlocked, never deleted.
   The drift notice and quiet checks were clicked through in Windows 11 and macOS
   26 VMs with VirusTotal answers simulated; on Windows the drift notice goes to
   the notification centre after a few seconds, where its buttons still work.
+- **Opening a download from the browser while it's being checked fails.** It's
+  locked for those seconds, so on Windows the browser's list of downloads shows
+  "Windows cannot access the specified device, path, or file". Wait for the
+  "Clean, moved to Downloads" notification and open it from there.
 - **"Always open similar files" in a browser vt-quarantine doesn't know** opens a
   download before it can be locked. Turn that off in the browser's settings.
 - **Programs already running as you are out of scope.** They can write to the
