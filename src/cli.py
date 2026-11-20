@@ -141,9 +141,10 @@ def scan(targets, as_json=False):
 
 
 def wait_for_key():
-    """The API key, once there is one. Until then it's said to be missing (once): on
-    Windows and macOS with the key window (by itself right after installing), elsewhere
-    with how to set it. A key saved any other way (--set-key, the key file) counts too."""
+    """The API key, once there is one. Until then it's said to be missing (once a start):
+    on Windows and macOS with the key window, by itself at every start (a notification
+    alone is easily missed), elsewhere with how to set it. A key saved any other way
+    (--set-key, the key file) counts too. Once one arrives, a note says it's working."""
     saved = threading.Event()  # the key window saved one: look again straight away
     prompt, warned = None, False
     while not (key := startup_key()):
@@ -152,11 +153,8 @@ def wait_for_key():
             log(f"no API key at {KEY_FILE}")
             wait_for_free_screen("the API key warning")
             if WINDOWS or MACOS:
-                if not KEY_ASKED.exists():
-                    KEY_ASKED.parent.mkdir(parents=True, exist_ok=True)
-                    KEY_ASKED.touch()
-                    if key_window():
-                        continue
+                if key_window():
+                    continue
                 prompt = offer_key_window(saved)
             else:
                 notifier.notify("No VirusTotal API key",
@@ -167,6 +165,9 @@ def wait_for_key():
         saved.clear()
     if prompt is not None:
         notifier.close(prompt)
+    if warned:
+        notifier.tell(f"{APP} is on", "It checks every download before it reaches your Downloads folder, "
+                      "and starts by itself when you sign in.", "security-high")
     return key
 
 

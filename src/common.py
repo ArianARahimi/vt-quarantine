@@ -281,7 +281,6 @@ WATCH_LIST = CONFIG_DIR / "watched-folders.json"  # folders added in the setting
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
 DPAPI_FILE = CONFIG_DIR / "api_key.dpapi"  # Windows: encrypted for this Windows account
 KEY_CHANGED = CONFIG_DIR / "api_key.changed"  # touched by --set-key
-KEY_ASKED = CONFIG_DIR / "api_key.asked"  # Windows, macOS: the key window opened by itself once
 LIB_ROOT = DATA_DIR / "lib"
 BUNDLED_WHEELS = Path(__file__).resolve().parent / "wheels"  # put there by the .msi
 LOG_FILE = DATA_DIR / "vt-quarantine.log"
