@@ -623,7 +623,7 @@ class Quarantine:
                                    f"contents (0/{total} means nothing here).", "dialog-warning")
         if kind == "clean":
             return self.release_unchanged(path, sha, sig, "Clean, moved to {}",
-                                          f"{name} (0/{total} detections)")
+                                          f"{{name}} (0/{total} detections)")
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
 
@@ -634,17 +634,17 @@ class Quarantine:
         if not marked_safe(sha):
             return self.ask(path, sha, summary, body, icon, extra, report)
         log(f"{path.name} was marked safe before")
-        return self.release_unchanged(path, sha, sig, "Marked safe before, moved to {}",
-                                      html.escape(path.name))
+        return self.release_unchanged(path, sha, sig, "Marked safe before, moved to {}", "{name}")
 
     @staticmethod
     def release_unchanged(path, sha, sig, summary, body):
         """Move a cleared file to Downloads, unless it was written to since it was
-        hashed (the verdict is for other contents: the next scan checks it again)."""
+        hashed (the verdict is for other contents: the next scan checks it again).
+        {name} in body becomes the name it got there, "(1)" and all."""
         if signature(path) != sig:
             log(f"{path.name} changed while being checked, checking again")
         elif dest := release(path, sha):
-            tell_moved(summary.format(place_name(dest.parent)), body, dest)
+            tell_moved(summary.format(place_name(dest.parent)), body.format(name=html.escape(dest.name)), dest)
         return False
 
     def ask(self, *args, **kwargs):
