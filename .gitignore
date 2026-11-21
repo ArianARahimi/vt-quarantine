@@ -4,3 +4,4 @@ api_key
 dist/
 .env
 .env.*
+threat-model/
