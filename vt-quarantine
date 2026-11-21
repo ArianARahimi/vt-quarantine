@@ -82,6 +82,15 @@ AUTO_UPLOAD_EXT = {
     ".jar", ".apk", ".appimage", ".run", ".sh", ".py", ".pl", ".deb", ".rpm",
     ".flatpak", ".snap", ".pkg", ".dmg", ".command", ".app",
 }
+# Office, PDF and similar files: uploaded without asking only once the user turns on
+# "Upload unknown documents", since these are the files that hold personal details.
+DOCUMENT_EXT = {
+    ".pdf", ".xps", ".oxps", ".rtf", ".epub",
+    ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm",
+    ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm", ".pot", ".potx", ".potm",
+    ".odt", ".ods", ".odp", ".odg", ".pub", ".one", ".vsd", ".vsdx",
+}
 EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
 
 # Downloads still in progress: Firefox (.part), Chrome/Edge/Brave/Vivaldi
@@ -276,6 +285,8 @@ QUARANTINE = RELEASE_DIR / ".quarantine"
 DESKTOP_DIR = desktop_dir()
 FOLDER_WATCH = CONFIG_DIR / "folder-watch"  # move (the default), check or off
 MAC_PRIVATE_WATCH = CONFIG_DIR / "watch-desktop-documents"  # macOS: asks for permission
+UPLOAD_DOCUMENTS = CONFIG_DIR / "upload-documents"  # unknown documents upload without asking
+DOCUMENTS_NOTE_SHOWN = CONFIG_DIR / "documents-note-shown"  # the one-time note about it
 ORIGINS = DATA_DIR / "origins.json"  # files taken into quarantine from elsewhere: where they go back
 WATCH_LIST = CONFIG_DIR / "watched-folders.json"  # folders added in the settings or learned from browsers
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store
@@ -977,6 +988,15 @@ def make_notifier():
 notifier = None  # set in run()
 
 
+def windows_message_box(text, title, flags):
+    """Windows' own message box (all of the text, up until answered): the button pressed."""
+    import ctypes
+    from ctypes import wintypes as w
+    box = ctypes.WinDLL("user32").MessageBoxW
+    box.restype, box.argtypes = ctypes.c_int, (w.HWND, w.LPCWSTR, w.LPCWSTR, w.UINT)
+    return box(None, text, title, flags)
+
+
 def windows_clipboard(text):
     """Put text on the Windows clipboard (Win32, no helper program)."""
     import ctypes
@@ -1624,8 +1644,50 @@ def delete(path):
     log(f"deleted {path.name}")
 
 
+DOCUMENTS_WARNING = (
+    "Documents VirusTotal has never seen (PDF, Word, Excel, PowerPoint and similar) will be uploaded "
+    "without asking.\n\nAnything uploaded to VirusTotal can be searched and downloaded by its paid "
+    "subscribers: companies and researchers around the world. A tax return, bank statement, contract, "
+    "medical record, ID scan or résumé uploaded this way can be read by strangers, and you can't delete "
+    "it afterwards.\n\nLeave this off if you ever download documents with personal details.")
+
+
+def upload_documents():
+    return UPLOAD_DOCUMENTS.exists()
+
+
+def set_upload_documents(on):
+    if on:
+        save_file(UPLOAD_DOCUMENTS, "")
+    else:
+        UPLOAD_DOCUMENTS.unlink(missing_ok=True)
+
+
+def documents_note():
+    """Once ever: unknown documents are asked about, and why that's the default. Up
+    until OK is pressed: on Windows a message box, since a toast cuts the text short."""
+    if DOCUMENTS_NOTE_SHOWN.exists():
+        return
+    where = "tray icon → Upload unknown documents" if WINDOWS else "run “vt-quarantine --upload-documents on”"
+    summary = "Documents aren't uploaded without asking"
+    body = ("When VirusTotal hasn't seen a document (PDF, Word, Excel and similar), you're asked before it's "
+            "uploaded. Uploads can be searched and downloaded by VirusTotal's paid subscribers, so don't upload "
+            f"anything with personal details. To upload documents without being asked: {where}.")
+    try:
+        wait_for_free_screen("the documents note")
+        if WINDOWS:
+            windows_message_box(body, summary, 0x40 | 0x10000)  # MB_ICONINFORMATION | MB_SETFOREGROUND
+        elif notifier.notify(summary, body, "critical", "dialog-information", [("ok", "OK")]) is None:
+            return  # not seen: shown next time
+        save_file(DOCUMENTS_NOTE_SHOWN, "")
+    except Exception as e:
+        log(f"documents note failed: {e}")
+
+
 def should_auto_upload(path, opener=None):
     if path.suffix.lower() in AUTO_UPLOAD_EXT:
+        return True
+    if path.suffix.lower() in DOCUMENT_EXT and upload_documents():
         return True
     with (opener or open_nofollow)(path) as f:
         return f.read(4).startswith(EXECUTABLE_MAGIC)
@@ -1857,8 +1919,9 @@ class Quarantine:
                             "dialog-warning", report=False)
         if not should_auto_upload(path):
             choice = self.no_verdict(path, sha, sig, "Not on VirusTotal",
-                              f"{name} is unknown to VirusTotal. Upload it for scanning? "
-                              "(Uploaded files can be downloaded by VT subscribers.)",
+                              f"{name} is unknown to VirusTotal. Uploaded files can be searched and "
+                              "downloaded by VirusTotal's paid subscribers. Don't upload anything with "
+                              "personal details. Are you sure you wish to proceed?",
                               "dialog-question", [("upload", "Upload")], report=False)
             if choice != "upload":
                 return choice
@@ -3800,6 +3863,7 @@ def watch_browsers():
     except Exception as e:
         log(f"browser setup failed: {e}")
         waiting = True
+    threading.Thread(target=documents_note, daemon=True).start()  # waits for its OK on its own
     seen, next_full = None, 0.0
     while True:
         # Often while a browser is waiting to be closed: it may be opened again soon.
@@ -5230,14 +5294,15 @@ WM_SHOW_MENU = 0x8002  # sent by the Start menu entry
 MODE_LABELS = (("move", "Move into quarantine"), ("check", "Check only"), ("off", "Off"))
 
 
-def tray_menu(mode, extras, startup, waiting_for_key, can_update):
+def tray_menu(mode, extras, startup, waiting_for_key, can_update, documents=False):
     """The menu as (id, label, flags) rows, (label, rows) for a submenu, None for a line."""
     rows = [(2, "Open quarantine folder", set())]
     if waiting_for_key:
         rows.append((3, "Enter API key…", set()))
     modes = [(10 + i, label, {"radio", "checked"} if m == mode else {"radio"}) for i, (m, label) in enumerate(MODE_LABELS)]
     folders = [(20, "Add a folder…", set()), (21, "Forget extra folders", set() if extras else {"grayed"})]
-    rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders), None,
+    rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders),
+             (25, "Upload unknown documents", {"checked"} if documents else set()), None,
              (30, "Run on startup", {"checked"} if startup else set())]
     if can_update:
         rows.append((40, "Check for updates", set()))
@@ -5283,6 +5348,11 @@ class Tray:
                     notifier.tell("Now watching", html.escape(folder), "security-high")
             elif ident == 21:
                 forget_folders()
+            elif ident == 25:
+                if upload_documents():
+                    set_upload_documents(False)
+                elif self.confirm_documents():
+                    set_upload_documents(True)
             elif ident == 30:
                 set_startup(not startup_enabled())
             elif ident == 40 and self.updater:
@@ -5296,7 +5366,7 @@ class Tray:
     def menu_rows(self):
         lists = read_watch_list()
         return tray_menu(watch_mode(), bool(lists["added"] or lists["learned"]), startup_enabled(),
-                         self.waiting_for_key, self.updater is not None)
+                         self.waiting_for_key, self.updater is not None, upload_documents())
 
     # The Win32 side: untestable off Windows, so it only draws and passes clicks on.
 
@@ -5437,6 +5507,10 @@ class Tray:
         if radios and chosen:
             u.CheckMenuRadioItem(menu, radios[0], radios[-1], chosen[0], 0)  # a dot, MF_BYCOMMAND
         return menu
+
+    def confirm_documents(self):
+        # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND; IDYES = 6
+        return windows_message_box(DOCUMENTS_WARNING, "Upload unknown documents?", 0x4 | 0x30 | 0x100 | 0x10000) == 6
 
     def confirm_quit(self):
         busy = " It finishes checking the current download first." if self.busy() else ""
@@ -5790,6 +5864,9 @@ def main():
                        help="downloads saved outside quarantine (Save As): move (the default: taken "
                             "into quarantine and put back once checked), check (only checked where "
                             "they are) or off")
+    group.add_argument("-D", "--upload-documents", choices=("on", "off"),
+                       help="upload unknown documents (PDF, Word, Excel...) without asking: "
+                            "off (the default) or on")
     group.add_argument("--settings", action="store_true",
                        help="open the settings window (what opening the app again does)")
     group.add_argument("--add-folder", metavar="FOLDER",
@@ -5825,6 +5902,11 @@ def main():
         return set_auto_update(args.auto_update)
     if args.watch_folders:
         return set_watch_folders(args.watch_folders)
+    if args.upload_documents:
+        set_upload_documents(args.upload_documents == "on")
+        print(f"Upload unknown documents is on.\n\n{DOCUMENTS_WARNING}" if args.upload_documents == "on"
+              else "Upload unknown documents is off: you're asked before each unknown document is uploaded.")
+        return 0
     if args.settings:
         return settings()
     if args.add_folder:

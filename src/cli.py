@@ -325,6 +325,9 @@ def main():
                        help="downloads saved outside quarantine (Save As): move (the default: taken "
                             "into quarantine and put back once checked), check (only checked where "
                             "they are) or off")
+    group.add_argument("-D", "--upload-documents", choices=("on", "off"),
+                       help="upload unknown documents (PDF, Word, Excel...) without asking: "
+                            "off (the default) or on")
     group.add_argument("--settings", action="store_true",
                        help="open the settings window (what opening the app again does)")
     group.add_argument("--add-folder", metavar="FOLDER",
@@ -360,6 +363,11 @@ def main():
         return set_auto_update(args.auto_update)
     if args.watch_folders:
         return set_watch_folders(args.watch_folders)
+    if args.upload_documents:
+        set_upload_documents(args.upload_documents == "on")
+        print(f"Upload unknown documents is on.\n\n{DOCUMENTS_WARNING}" if args.upload_documents == "on"
+              else "Upload unknown documents is off: you're asked before each unknown document is uploaded.")
+        return 0
     if args.settings:
         return settings()
     if args.add_folder:

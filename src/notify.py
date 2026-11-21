@@ -375,6 +375,15 @@ def make_notifier():
 notifier = None  # set in run()
 
 
+def windows_message_box(text, title, flags):
+    """Windows' own message box (all of the text, up until answered): the button pressed."""
+    import ctypes
+    from ctypes import wintypes as w
+    box = ctypes.WinDLL("user32").MessageBoxW
+    box.restype, box.argtypes = ctypes.c_int, (w.HWND, w.LPCWSTR, w.LPCWSTR, w.UINT)
+    return box(None, text, title, flags)
+
+
 def windows_clipboard(text):
     """Put text on the Windows clipboard (Win32, no helper program)."""
     import ctypes

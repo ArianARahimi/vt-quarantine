@@ -138,10 +138,12 @@ On Windows, click the tray icon, or open VirusTotal Quarantine from the Start me
 
 - **Downloads saved elsewhere:** **Move into quarantine** checks them and puts them back where you saved them. **Check only** leaves them where they are and only notifies if the file is flagged. **Off** ignores all.
 - **Watched folders:** **Add a folder…** watches a custom folder. **Forget extra folders** clears all custom folders, and any it picked up from Save As.
+- **Upload unknown documents** (Windows): off by default. When on, PDF, Word, Excel, PowerPoint and similar files VirusTotal has never seen are uploaded without asking. Paid VirusTotal subscribers can search and download anything uploaded, so leave it off if you download documents with personal details.
 - **Run on startup** (Windows): on by default, and the same switch as in Task Manager. While it's off, downloads wait in quarantine until you open it.
 
 `vt-quarantine --settings` opens the same window, and `vt-quarantine
---watch-folders move|check|off` sets it from a terminal.
+--watch-folders move|check|off` sets it from a terminal. `vt-quarantine
+--upload-documents on|off` sets Upload unknown documents on any system.
 
 ### Startup
 
@@ -183,7 +185,8 @@ password); `vt-quarantine --auto-update off` stops update checks completely.
   or names, though it does see which API key asked.
 - **Uploads aren't private.** Paying VirusTotal subscribers can download
   uploaded files, so only programs, scripts and installers upload
-  automatically. Documents, media and archives ask first. Uploads are named
+  automatically. Documents ask first unless **Upload unknown documents** is on;
+  media and archives always ask first. Uploads are named
   `sample.<ext>`, not by their real name, and are tied to your API key.
 - **No telemetry.** The program talks to VirusTotal, to PyPI once on first run,
   and to GitHub once a day for updates (only your IP address and the program's
@@ -227,6 +230,8 @@ vt-quarantine -A, --auto-update off    stop checking for updates (on: start agai
                                        quiet: update without a notification)
 vt-quarantine -W, --watch-folders MODE downloads saved somewhere else: move (taken into
                                        quarantine, then put back), check or off
+vt-quarantine -D, --upload-documents on  upload unknown documents without asking
+                                       (off, the default: ask first)
 vt-quarantine --settings               open the settings window
 vt-quarantine --add-folder FOLDER      also watch FOLDER for downloads saved there
 vt-quarantine -F, --forget-safe        forget the files you marked safe

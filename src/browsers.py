@@ -940,6 +940,7 @@ def watch_browsers():
     except Exception as e:
         log(f"browser setup failed: {e}")
         waiting = True
+    threading.Thread(target=documents_note, daemon=True).start()  # waits for its OK on its own
     seen, next_full = None, 0.0
     while True:
         # Often while a browser is waiting to be closed: it may be opened again soon.

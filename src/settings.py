@@ -139,14 +139,15 @@ WM_SHOW_MENU = 0x8002  # sent by the Start menu entry
 MODE_LABELS = (("move", "Move into quarantine"), ("check", "Check only"), ("off", "Off"))
 
 
-def tray_menu(mode, extras, startup, waiting_for_key, can_update):
+def tray_menu(mode, extras, startup, waiting_for_key, can_update, documents=False):
     """The menu as (id, label, flags) rows, (label, rows) for a submenu, None for a line."""
     rows = [(2, "Open quarantine folder", set())]
     if waiting_for_key:
         rows.append((3, "Enter API key…", set()))
     modes = [(10 + i, label, {"radio", "checked"} if m == mode else {"radio"}) for i, (m, label) in enumerate(MODE_LABELS)]
     folders = [(20, "Add a folder…", set()), (21, "Forget extra folders", set() if extras else {"grayed"})]
-    rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders), None,
+    rows += [None, ("Downloads saved elsewhere", modes), ("Watched folders", folders),
+             (25, "Upload unknown documents", {"checked"} if documents else set()), None,
              (30, "Run on startup", {"checked"} if startup else set())]
     if can_update:
         rows.append((40, "Check for updates", set()))
@@ -192,6 +193,11 @@ class Tray:
                     notifier.tell("Now watching", html.escape(folder), "security-high")
             elif ident == 21:
                 forget_folders()
+            elif ident == 25:
+                if upload_documents():
+                    set_upload_documents(False)
+                elif self.confirm_documents():
+                    set_upload_documents(True)
             elif ident == 30:
                 set_startup(not startup_enabled())
             elif ident == 40 and self.updater:
@@ -205,7 +211,7 @@ class Tray:
     def menu_rows(self):
         lists = read_watch_list()
         return tray_menu(watch_mode(), bool(lists["added"] or lists["learned"]), startup_enabled(),
-                         self.waiting_for_key, self.updater is not None)
+                         self.waiting_for_key, self.updater is not None, upload_documents())
 
     # The Win32 side: untestable off Windows, so it only draws and passes clicks on.
 
@@ -346,6 +352,10 @@ class Tray:
         if radios and chosen:
             u.CheckMenuRadioItem(menu, radios[0], radios[-1], chosen[0], 0)  # a dot, MF_BYCOMMAND
         return menu
+
+    def confirm_documents(self):
+        # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND; IDYES = 6
+        return windows_message_box(DOCUMENTS_WARNING, "Upload unknown documents?", 0x4 | 0x30 | 0x100 | 0x10000) == 6
 
     def confirm_quit(self):
         busy = " It finishes checking the current download first." if self.busy() else ""

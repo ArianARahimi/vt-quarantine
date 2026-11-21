@@ -362,8 +362,50 @@ def delete(path):
     log(f"deleted {path.name}")
 
 
+DOCUMENTS_WARNING = (
+    "Documents VirusTotal has never seen (PDF, Word, Excel, PowerPoint and similar) will be uploaded "
+    "without asking.\n\nAnything uploaded to VirusTotal can be searched and downloaded by its paid "
+    "subscribers: companies and researchers around the world. A tax return, bank statement, contract, "
+    "medical record, ID scan or résumé uploaded this way can be read by strangers, and you can't delete "
+    "it afterwards.\n\nLeave this off if you ever download documents with personal details.")
+
+
+def upload_documents():
+    return UPLOAD_DOCUMENTS.exists()
+
+
+def set_upload_documents(on):
+    if on:
+        save_file(UPLOAD_DOCUMENTS, "")
+    else:
+        UPLOAD_DOCUMENTS.unlink(missing_ok=True)
+
+
+def documents_note():
+    """Once ever: unknown documents are asked about, and why that's the default. Up
+    until OK is pressed: on Windows a message box, since a toast cuts the text short."""
+    if DOCUMENTS_NOTE_SHOWN.exists():
+        return
+    where = "tray icon → Upload unknown documents" if WINDOWS else "run “vt-quarantine --upload-documents on”"
+    summary = "Documents aren't uploaded without asking"
+    body = ("When VirusTotal hasn't seen a document (PDF, Word, Excel and similar), you're asked before it's "
+            "uploaded. Uploads can be searched and downloaded by VirusTotal's paid subscribers, so don't upload "
+            f"anything with personal details. To upload documents without being asked: {where}.")
+    try:
+        wait_for_free_screen("the documents note")
+        if WINDOWS:
+            windows_message_box(body, summary, 0x40 | 0x10000)  # MB_ICONINFORMATION | MB_SETFOREGROUND
+        elif notifier.notify(summary, body, "critical", "dialog-information", [("ok", "OK")]) is None:
+            return  # not seen: shown next time
+        save_file(DOCUMENTS_NOTE_SHOWN, "")
+    except Exception as e:
+        log(f"documents note failed: {e}")
+
+
 def should_auto_upload(path, opener=None):
     if path.suffix.lower() in AUTO_UPLOAD_EXT:
+        return True
+    if path.suffix.lower() in DOCUMENT_EXT and upload_documents():
         return True
     with (opener or open_nofollow)(path) as f:
         return f.read(4).startswith(EXECUTABLE_MAGIC)
@@ -595,8 +637,9 @@ class Quarantine:
                             "dialog-warning", report=False)
         if not should_auto_upload(path):
             choice = self.no_verdict(path, sha, sig, "Not on VirusTotal",
-                              f"{name} is unknown to VirusTotal. Upload it for scanning? "
-                              "(Uploaded files can be downloaded by VT subscribers.)",
+                              f"{name} is unknown to VirusTotal. Uploaded files can be searched and "
+                              "downloaded by VirusTotal's paid subscribers. Don't upload anything with "
+                              "personal details. Are you sure you wish to proceed?",
                               "dialog-question", [("upload", "Upload")], report=False)
             if choice != "upload":
                 return choice

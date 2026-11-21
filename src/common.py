@@ -82,6 +82,15 @@ AUTO_UPLOAD_EXT = {
     ".jar", ".apk", ".appimage", ".run", ".sh", ".py", ".pl", ".deb", ".rpm",
     ".flatpak", ".snap", ".pkg", ".dmg", ".command", ".app",
 }
+# Office, PDF and similar files: uploaded without asking only once the user turns on
+# "Upload unknown documents", since these are the files that hold personal details.
+DOCUMENT_EXT = {
+    ".pdf", ".xps", ".oxps", ".rtf", ".epub",
+    ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm",
+    ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm", ".pot", ".potx", ".potm",
+    ".odt", ".ods", ".odp", ".odg", ".pub", ".one", ".vsd", ".vsdx",
+}
 EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
 
 # Downloads still in progress: Firefox (.part), Chrome/Edge/Brave/Vivaldi
@@ -276,6 +285,8 @@ QUARANTINE = RELEASE_DIR / ".quarantine"
 DESKTOP_DIR = desktop_dir()
 FOLDER_WATCH = CONFIG_DIR / "folder-watch"  # move (the default), check or off
 MAC_PRIVATE_WATCH = CONFIG_DIR / "watch-desktop-documents"  # macOS: asks for permission
+UPLOAD_DOCUMENTS = CONFIG_DIR / "upload-documents"  # unknown documents upload without asking
+DOCUMENTS_NOTE_SHOWN = CONFIG_DIR / "documents-note-shown"  # the one-time note about it
 ORIGINS = DATA_DIR / "origins.json"  # files taken into quarantine from elsewhere: where they go back
 WATCH_LIST = CONFIG_DIR / "watched-folders.json"  # folders added in the settings or learned from browsers
 KEY_FILE = CONFIG_DIR / "api_key"  # plain text: only where there's no password store

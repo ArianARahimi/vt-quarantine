@@ -74,6 +74,7 @@ installed. Details: [guide](docs/GUIDE.md#browser-setup).
   **Mark as safe**.
 - **Unknown to VirusTotal:** programs are uploaded for a scan; documents and
   archives ask first, since uploads can be seen by VirusTotal's paying users.
+  Documents can be set to upload without asking.
 - **Saved somewhere else** (Save As into Desktop, Music, ...): taken into
   quarantine at once, checked, and put back where you saved it.
 - **Settings** are in the tray icon on Windows. On macOS and Linux, open the app again.
