@@ -430,10 +430,12 @@ def verdict_line(name, stats, results):
     return f"verdict on {name}: {bad}/{total} malicious, {sus} suspicious" + (f" ({flagged})" if flagged else "")
 
 
-def classify(stats, tags):
+def classify(stats, tags, first_seen=None):
     """clean, flagged, no_engines, few_engines (most gave up or can't read the file: a
-    file padded to be huge gets past them that way) or encrypted (engines can't see
-    inside a password-protected archive). In the last two, 0 detections means nothing."""
+    file padded to be huge gets past them that way), encrypted (engines can't see
+    inside a password-protected archive) or new (first seen on VirusTotal under a day
+    ago: malware is often uploaded by its maker before engines know it). In the last
+    three, 0 detections means little."""
     bad, sus, total = counts(stats)
     if not total:
         return "no_engines"
@@ -442,7 +444,11 @@ def classify(stats, tags):
     gave_up = sum(stats.get(k, 0) for k in ("timeout", "confirmed-timeout", "failure"))
     if total < MIN_ENGINES or gave_up > total:
         return "few_engines"
-    return "encrypted" if "encrypted" in (tags or ()) else "clean"
+    if "encrypted" in (tags or ()):
+        return "encrypted"
+    if first_seen and time.time() - first_seen < NEW_SECONDS:
+        return "new"
+    return "clean"
 
 
 def detection_summary(stats, results):
@@ -623,7 +629,8 @@ class Quarantine:
             if attrs is None:
                 return self.unknown(path, sha, sig)
             return self.verdict(path, sha, sig, attrs["last_analysis_stats"],
-                                attrs.get("last_analysis_results"), attrs.get("tags"))
+                                attrs.get("last_analysis_results"), attrs.get("tags"),
+                                attrs.get("first_submission_date"))
         finally:
             if progress:
                 progress.close()
@@ -650,11 +657,12 @@ class Quarantine:
             progress.close()
         return self.verdict(path, sha, sig, stats, results, tags)
 
-    def verdict(self, path, sha, sig, stats, results, tags=None):
+    def verdict(self, path, sha, sig, stats, results, tags=None, first_seen=None):
+        """first_seen: when VirusTotal first saw a file it already knew (None for an upload)."""
         log(verdict_line(path.name, stats, results))
         bad, _, total, body = detection_summary(stats, results)
         name = html.escape(path.name)
-        kind = classify(stats, tags)
+        kind = classify(stats, tags, first_seen)
         if kind == "no_engines":
             return self.no_verdict(path, sha, sig, "No engines could scan this file",
                                    f"{name} got no verdict from any engine.", "dialog-warning")
@@ -666,6 +674,11 @@ class Quarantine:
             return self.no_verdict(path, sha, sig, "Encrypted archive",
                                    f"{name} is password-protected, so VirusTotal could not scan its "
                                    f"contents (0/{total} means nothing here).", "dialog-warning")
+        if kind == "new":
+            hours = max(1, int((time.time() - first_seen) // 3600))
+            return self.no_verdict(path, sha, sig, "New to VirusTotal",
+                                   f"{name} was first seen by VirusTotal {hours} h ago, so engines may not "
+                                   f"know it yet (0/{total} means little here).", "dialog-warning")
         if kind == "clean":
             return self.release_unchanged(path, sha, sig, "Clean, moved to {}",
                                           f"{{name}} (0/{total} detections)")

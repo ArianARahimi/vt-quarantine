@@ -68,6 +68,7 @@ UPLOAD_MAX = 650 * 1024**2
 ANALYSIS_TIMEOUT = 20 * 60
 MIN_ENGINES = 20          # 0 detections from fewer engines than this is no verdict
 STALE_DAYS = 30           # a clean verdict older than this gets a rescan for next time
+NEW_SECONDS = 24 * 3600   # 0 detections on a file VirusTotal first saw this recently is no verdict
 OUTSIDE_SCAN_SECONDS = 2  # how often Downloads and the Desktop are looked at
 OUTSIDE_QUEUE_MAX = 50    # new files waiting there at most (an archive unpacked loose)
 MAX_EXTRA_FOLDERS = 20    # folders watched besides the standard ones

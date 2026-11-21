@@ -61,13 +61,15 @@ def scan_file(path):
         if not should_auto_upload(path) and not confirm_upload():
             return {**result, "verdict": "no_verdict", "reason": "not_uploaded"}
         stats, results, tags = upload(path, sha)
+        first_seen = None
     else:
         stats, results, tags = (attrs["last_analysis_stats"], attrs.get("last_analysis_results"),
                                 attrs.get("tags"))
+        first_seen = attrs.get("first_submission_date")
     bad, sus, total = counts(stats)
     result.update(malicious=bad, suspicious=sus, engines=total,
                   flagged_by=dict(flagged_by(results)), report=report_url(sha))
-    kind = classify(stats, tags)
+    kind = classify(stats, tags, first_seen)
     if kind in ("clean", "flagged"):
         return {**result, "verdict": kind}
     return {**result, "verdict": "no_verdict", "reason": kind}
@@ -93,6 +95,8 @@ def print_result(r):
             "few_engines": f"  NO VERDICT: only {r.get('engines')} engines could scan it",
             "encrypted": f"  NO VERDICT: password-protected, so its contents weren't scanned "
                          f"(0/{r.get('engines')} means nothing here)",
+            "new": f"  NO VERDICT: first seen by VirusTotal under a day ago "
+                   f"(0/{r.get('engines')} means little yet)",
             "error": f"  error: {plain(r.get('error'))}",
         }[reason])
     if "report" in r:
