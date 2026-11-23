@@ -3,8 +3,8 @@
 # installed copies accept it as an update, then offers to publish it.
 #   tools/sign-release.sh v2.1.0
 # Needs gh (logged in), openssl, python3, bsdtar, 7z, the tag fetched locally and the key
-# from make-release-key.sh. Nothing downloaded is ever run: the checks use the program
-# from the local tag, and the release must hold exactly that program.
+# from make-release-key.sh. Nothing downloaded is ever run: the checks use the source at
+# the local tag, and every file must hold only what that source and its pins make.
 set -eu
 tag=${1:?usage: tools/sign-release.sh vX.Y.Z}
 repo=ArianARahimi/vt-quarantine
@@ -18,8 +18,8 @@ trusted=$(mktemp -d)
 trap 'rm -rf "$work" "$trusted"' EXIT
 git -C "$root" show "$tag:vt-quarantine" > "$trusted/vt-quarantine.py" 2>/dev/null ||
     { echo "No $tag here: git fetch --tags first."; exit 1; }
-# Linux packages point its first line at /usr/bin/python3 (linux/build.sh).
-sed '1s|^#!/usr/bin/env python3$|#!/usr/bin/python3|' "$trusted/vt-quarantine.py" > "$trusted/packaged"
+mkdir "$trusted/tree"
+git -C "$root" archive "$tag" | tar -x -C "$trusted/tree"
 
 if [ "$(gh release view "$tag" -R "$repo" --json isDraft --jq .isDraft)" != true ]; then
     echo "$tag is not a draft release."
@@ -44,28 +44,16 @@ if [ "$listed" != "$present" ]; then
     exit 1
 fi
 
-# Sign only what was reviewed: every file holds exactly the program at the tag (the
-# Pythons bundled for Windows and macOS aren't compared). A new kind of file is refused
-# until it's added here.
-program_in() {
-    case $1 in
-        *.py) cat "$1" ;;
-        *.deb) bsdtar -xOf "$1" 'data.tar.*' | bsdtar -xOf - ./usr/bin/vt-quarantine ;;
-        *.rpm) bsdtar -xOf "$1" ./usr/bin/vt-quarantine ;;
-        *.pkg.tar.zst) bsdtar -xOf "$1" usr/bin/vt-quarantine ;;
-        *.zip) bsdtar -xOf "$1" 'VirusTotal Quarantine.app/Contents/Resources/vt-quarantine.py' ;;
-        *.msi) 7z e -so "$1" Script ;;
-        *) return 1 ;;
-    esac
-}
-for f in $present; do
-    case $f in *.deb|*.rpm|*.pkg.tar.zst) want=$trusted/packaged ;; *) want=$trusted/vt-quarantine.py ;; esac
-    if ! program_in "$f" 2>/dev/null | cmp -s - "$want"; then
-        echo "$f doesn't hold the program at $tag. Not signing."
-        exit 1
-    fi
-done
-echo "Every file holds the program at $tag."
+# Sign only what was reviewed: every file holds only what the source at the tag and its
+# pins make (programs, package files, the Pythons and wheels, the MSI's tables), and Linux
+# packages have no install scripts. A new kind of file is refused until it's added there.
+echo "Comparing every file with the source at $tag (pinned downloads are cached):"
+# shellcheck disable=SC2086  # one argument per release file, as above
+if ! python3 -I -B "$root/tools/check_release.py" "$trusted/tree" $present; then
+    echo "Not signing."
+    exit 1
+fi
+echo "Every file holds only what $tag makes."
 
 # Signed first, so the passphrase is asked for straight away instead of after minutes of
 # VirusTotal checks (a passphrase pasted early lands on the screen). The signature stays
