@@ -146,7 +146,8 @@ FICLONE = 0x40049409  # Linux: share the data with a new file (Btrfs, XFS), no c
 RELEASED = {}  # files this program just moved out of quarantine -> when: not taken in again
 RELEASED_LOCK = threading.Lock()
 RELEASED_SECONDS = 60  # a released file turns up in the next look or two, if at all
-RELEASED_SHAS = DATA_DIR / "released.json"  # contents cleared before: taken in again, they'd only come back
+RELEASED_SHAS = DATA_DIR / "cleared.json"  # contents released as clean: taken in again, they'd only come back
+OLD_RELEASED_SHAS = DATA_DIR / "released.json"  # the earlier list, which also held flagged and marked-safe files
 RELEASED_SHAS_MAX = 1000
 ORIGINS_LOCK = threading.Lock()
 
@@ -308,7 +309,7 @@ def nobody_has_open(path):
     kernel32.CloseHandle(handle)
 
 
-def release(path, sha=None):
+def release(path, sha=None, clean=False):
     """Move a file to Downloads, or back to the folder it was taken from. None (and it
     stays) if it no longer holds what was checked (sha). What arrives is a copy made
     and hashed here, so nothing that still has the download open can add to it
@@ -346,7 +347,7 @@ def release(path, sha=None):
         log(f"{path.name} changed after it was checked, checking again")
         return None
     set_origin(path.name, None)
-    if copied:
+    if copied and clean:  # only a clean verdict may skip the lookup next time
         try:
             remember_released(copied)
         except OSError as e:
@@ -681,7 +682,7 @@ class Quarantine:
                                    f"know it yet (0/{total} means little here).", "dialog-warning")
         if kind == "clean":
             return self.release_unchanged(path, sha, sig, "Clean, moved to {}",
-                                          f"{{name}} (0/{total} detections)")
+                                          f"{{name}} (0/{total} detections)", clean=True)
         return self.ask(path, sha, f"⚠ Flagged: {path.name}", body, "security-low",
                         flagged=True, detections=bad)
 
@@ -695,13 +696,13 @@ class Quarantine:
         return self.release_unchanged(path, sha, sig, "Marked safe before, moved to {}", "{name}")
 
     @staticmethod
-    def release_unchanged(path, sha, sig, summary, body):
+    def release_unchanged(path, sha, sig, summary, body, clean=False):
         """Move a cleared file to Downloads, unless it was written to since it was
         hashed (the verdict is for other contents: the next scan checks it again).
         {name} in body becomes the name it got there, "(1)" and all."""
         if signature(path) != sig:
             log(f"{path.name} changed while being checked, checking again")
-        elif dest := release(path, sha):
+        elif dest := release(path, sha, clean):
             tell_moved(summary.format(place_name(dest.parent)), body.format(name=html.escape(dest.name)), dest)
         return False
 
@@ -1139,7 +1140,7 @@ class Outside:
 
     @staticmethod
     def cleared_before(path):
-        """The same contents went through quarantine already (a released download copied
+        """The same contents were released as clean already (a released download copied
         or moved to another folder)."""
         shas = read_released_shas()
         if shas and sha256(path, _open_nofollow) in shas:

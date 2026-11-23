@@ -214,6 +214,7 @@ def run():
     UPDATING_MARKER.unlink(missing_ok=True)  # it went through, or didn't
     make_quarantine()
     prune_origins()
+    OLD_RELEASED_SHAS.unlink(missing_ok=True)
 
     while not install_requirements():
         log("retrying in a minute")
