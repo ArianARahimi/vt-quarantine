@@ -1566,6 +1566,32 @@ def copy_mac_attributes(path, copy):
                     raise
 
 
+def move_new(src, folder, name, taken=lambda n: False):
+    """Linux/macOS: move src into folder as name, or "name (1)" and so on, never replacing a
+    file that turns up meanwhile (a hard link only takes a free name). Returns where it went."""
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 0
+    while True:
+        dest = folder / (name if n == 0 else f"{stem} ({n}){suffix}")
+        n += 1
+        if taken(dest.name) or os.path.lexists(dest):
+            continue
+        note_released(dest)
+        try:
+            os.link(src, dest, follow_symlinks=False)
+        except FileExistsError:
+            forget_released(dest)
+            continue
+        except OSError:  # no hard links here (FAT, some network drives): check, then move
+            if os.path.lexists(dest):
+                forget_released(dest)
+                continue
+            os.replace(src, dest)
+            return dest
+        os.unlink(src)
+        return dest
+
+
 def win_move(src, dest):
     """Windows: move a file, across drives too, keeping its streams (the mark that it
     came from the internet lives in one; a plain copy would drop it)."""
@@ -1601,10 +1627,11 @@ def release(path, sha=None, clean=False):
     folder = release_dir(path)
     dest = folder / path.name
     n = 1
-    while dest.exists():
+    while WINDOWS and dest.exists():
         dest = folder / f"{path.stem} ({n}){path.suffix}"
         n += 1
-    note_released(dest)
+    if WINDOWS:
+        note_released(dest)  # (a move there refuses a name that's taken)
     unlock_file(path)
     try:
         if WINDOWS:
@@ -1618,7 +1645,7 @@ def release(path, sha=None, clean=False):
             if changed:
                 tmp.unlink()
             else:
-                os.replace(tmp, dest)
+                dest = move_new(tmp, folder, path.name)
                 path.unlink()
     except BaseException:
         forget_released(dest)
@@ -2448,20 +2475,24 @@ class Outside:
                 tmp = QUARANTINE / f".vtq-{uuid.uuid4().hex}.part"
                 retry_locked(lambda: win_move(path, tmp))
                 try:
-                    os.replace(tmp, dest)
+                    os.rename(tmp, dest)  # refuses a name taken meanwhile, unlike replace
                 except OSError:
                     win_move(tmp, path)
                     raise
             else:
                 import errno
                 try:
-                    os.rename(path, dest)
+                    os.link(path, dest, follow_symlinks=False)  # fails if the name was taken meanwhile
+                    path.unlink()
                 except OSError as e:
-                    if e.errno != errno.EXDEV:
+                    if e.errno == errno.EEXIST:
                         raise
-                    # Another disk: copied in under a name quarantine ignores until it's whole.
+                    # Another disk, or no hard links: copied in under a name quarantine ignores.
                     tmp, _ = copy_out(path, QUARANTINE, suffix=".part")
-                    os.replace(tmp, dest)
+                    try:
+                        os.link(tmp, dest, follow_symlinks=False)
+                    finally:
+                        tmp.unlink()
                     path.unlink()
         except BaseException:
             set_origin(dest.name, None)
