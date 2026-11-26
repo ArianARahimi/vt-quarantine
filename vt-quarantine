@@ -1191,7 +1191,9 @@ class Progress:
 # as it's gone. Download notifications always show: someone who is downloading things
 # isn't absorbed in a game.
 
+# Rechecks start quick (a video closed soon) and slow down during a long game.
 FULLSCREEN_RECHECK_SECONDS = 5
+FULLSCREEN_RECHECK_MAX = 60
 KWIN_SCRIPT = """\
 const full = workspace.windowList().some(w => w.fullScreen && !w.minimized &&
     (w.onAllDesktops || w.desktops.some(d => d.id === workspace.currentDesktop.id)));
@@ -1276,11 +1278,13 @@ def screen_taken():
 def wait_for_free_screen(what):
     """Wait while something is fullscreen. True if it had to."""
     waited = False
+    delay = FULLSCREEN_RECHECK_SECONDS
     while screen_taken():
         if not waited:
             log(f"{what} waits until nothing is fullscreen")
             waited = True
-        time.sleep(FULLSCREEN_RECHECK_SECONDS)
+        time.sleep(delay)
+        delay = min(delay * 2, FULLSCREEN_RECHECK_MAX)
     return waited
 
 
