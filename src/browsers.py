@@ -631,8 +631,8 @@ def browser_pass(record):
     set_up, waiting, covered = [], [], []
     setup_new_firefox(record, set_up, waiting, covered)
     firefox_auto_open_pass(record)
-    chromium_auto_open_pass(record)
     setup_new_chromium(record, set_up, waiting, covered)
+    chromium_auto_open_pass(record)  # after: a profile recorded just now is covered at once
     if MACOS:
         safari_pass(record, set_up, waiting, covered)
     return set_up, waiting, covered
@@ -667,11 +667,16 @@ def setup_new_firefox(record, set_up, waiting, covered):
         except (OSError, ValueError) as e:
             log(f"could not set up {browser} profile {folder}: {e}")
             continue
-        if before is not None:
-            record["firefox"].append({"profile": str(folder), "before": before})
-            log(f"set up {browser} profile {folder}")
-            # Taken from user.js at its next start.
-            (waiting if profile_in_use(folder) else set_up).append(browser)
+        if before is None:
+            # Saving into quarantine already (a copy of a set-up profile): recorded all
+            # the same, so auto-open stays off for it and uninstall puts it back.
+            record["firefox"].append({"profile": str(folder), "before": {}})
+            log(f"{browser} profile {folder} already saves into quarantine: looked after from now on")
+            continue
+        record["firefox"].append({"profile": str(folder), "before": before})
+        log(f"set up {browser} profile {folder}")
+        # Taken from user.js at its next start.
+        (waiting if profile_in_use(folder) else set_up).append(browser)
 
 
 handler_errors = set()  # (folder, error) already logged: the pass runs every few minutes
@@ -715,7 +720,11 @@ def setup_new_chromium(record, set_up, waiting, covered):
     done = {entry["prefs"] for entry in record["chromium"]}
     for browser, root, prefs in chromium_profiles():
         covered.append(browser)
-        if str(prefs) in done or chromium_points_here(prefs):
+        if str(prefs) in done:
+            continue
+        if chromium_points_here(prefs):  # as for Firefox: recorded, so it's looked after
+            record["chromium"].append({"browser": browser, "prefs": str(prefs), "before": {}})
+            log(f"{browser} profile {prefs.parent} already saves into quarantine: looked after from now on")
             continue
         if chromium_running(root):  # asked once: on Flatpak each check starts a process
             if not (edge_on_windows(browser) and end_edge(root)):
