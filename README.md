@@ -61,6 +61,30 @@ Download the package for your system and install it, then run
 
 Anything else: download this repository (**Code → Download ZIP**) and run `sh install.sh`.
 
+### Check a download (optional)
+
+Updates are checked against the release key automatically. A first download is
+only as safe as GitHub, so you can check it yourself. Save the release key as
+`release-key.pem`:
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA8BIDEFE1YGJv1BdRz+LkUZq+H19vcaNWkdFt+kjmraw=
+-----END PUBLIC KEY-----
+```
+
+Download `SHA256SUMS` and `SHA256SUMS.sig` from the same release, then run
+(OpenSSL 3 or newer; on Windows, Git Bash has it):
+
+```
+openssl pkeyutl -verify -pubin -inkey release-key.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+sha256sum --ignore-missing -c SHA256SUMS
+```
+
+You want `Signature Verified Successfully` and `OK` for your file. The key's
+fingerprint (raw Ed25519) is
+`f0120310513560626fd41751cfe2e4519abe1f5f6f71a35691d16dfa48e6adac`.
+
 ### Browser setup
 
 vt-quarantine points your browsers at the quarantine folder by itself, and turns

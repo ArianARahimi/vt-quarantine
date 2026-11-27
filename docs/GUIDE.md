@@ -164,7 +164,8 @@ something, you're not absorbed in a game.
 Once a day, vt-quarantine asks GitHub for the newest release. It only installs
 one whose file list carries a valid signature from the release key, and only
 files that match that list. The key never leaves the maintainer's computer, so
-even someone who took over the GitHub account couldn't push code to you.
+even someone who took over the GitHub account couldn't push an update to you.
+A first download has no such check: see **Check a download** in the README.
 
 | Installed with | How it updates |
 |---|---|
@@ -185,7 +186,8 @@ password); `vt-quarantine --auto-update off` stops update checks completely.
   or names, though it does see which API key asked.
 - **Uploads aren't private.** Paying VirusTotal subscribers can download
   uploaded files, so only programs, scripts and installers upload
-  automatically. Documents ask first unless **Upload unknown documents** is on;
+  automatically, judged by their name, and at most 10 an hour (any more ask
+  first). Documents ask first unless **Upload unknown documents** is on;
   media and archives always ask first. Uploads are named
   `sample.<ext>`, not by their real name, and are tied to your API key.
 - **No telemetry.** The program talks to VirusTotal, to PyPI once on first run,
