@@ -430,13 +430,10 @@ def documents_note():
         log(f"documents note failed: {e}")
 
 
-def should_auto_upload(path, opener=None):
-    if path.suffix.lower() in AUTO_UPLOAD_EXT:
-        return True
-    if path.suffix.lower() in DOCUMENT_EXT and upload_documents():
-        return True
-    with (opener or open_nofollow)(path) as f:
-        return f.read(4).startswith(EXECUTABLE_MAGIC)
+def should_auto_upload(path):
+    # By name only: a private script saved as .txt asks first, whatever its first bytes.
+    suffix = path.suffix.lower()
+    return suffix in AUTO_UPLOAD_EXT or (suffix in DOCUMENT_EXT and upload_documents())
 
 
 def flagged_by(results):
@@ -562,8 +559,10 @@ def wait_analysis(analysis, name):
     """Wait for an analysis (upload or rescan) to finish: (stats, results)."""
     deadline = time.monotonic() + ANALYSIS_TIMEOUT
     status = None
+    delay = ANALYSIS_POLL_SECONDS
     while time.monotonic() < deadline:
-        time.sleep(ANALYSIS_POLL_SECONDS)
+        time.sleep(delay)
+        delay = min(delay * 2, ANALYSIS_POLL_MAX)
         r = vt("GET", f"/analyses/{analysis}")
         if r.status_code == 404:  # VirusTotal can take a moment to list a new analysis
             log(f"analysis of {name}: not listed yet")
@@ -670,7 +669,11 @@ class Quarantine:
             return self.no_verdict(path, sha, sig, "Not on VirusTotal",
                             f"{name} is unknown and too large to upload ({size // 1024**2} MB).",
                             "dialog-warning", report=False)
-        if not should_auto_upload(path):
+        auto = should_auto_upload(path)
+        if auto and not auto_uploads.take():
+            log(f"{path.name}: {AUTO_UPLOADS_PER_HOUR} automatic uploads in the last hour, asking first")
+            auto = False
+        if not auto:
             choice = self.no_verdict(path, sha, sig, "Not on VirusTotal",
                               f"{name} is unknown to VirusTotal. Uploaded files can be searched and "
                               "downloaded by VirusTotal's paid subscribers. Don't upload anything with "
@@ -1222,7 +1225,7 @@ class Outside:
         log(f"checking {path} (saved outside quarantine) {sha}")
         attrs = lookup(path.name, sha)
         if attrs is None:
-            if path.stat().st_size > UPLOAD_MAX or not should_auto_upload(path, _open_nofollow):
+            if path.stat().st_size > UPLOAD_MAX or not should_auto_upload(path) or not auto_uploads.take():
                 log(f"{path.name} is unknown to VirusTotal (not uploaded)")
                 return
             stats, results, tags = upload(path, sha)

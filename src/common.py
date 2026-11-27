@@ -61,7 +61,9 @@ EMPTY_SECONDS = 10  # an empty file waits longer: it may be a browser's placehol
 UPDATE_CHECK_SECONDS = 24 * 3600
 CONFIRM_DETECTIONS = 10  # "Mark as safe" asks twice from this many malicious verdicts
 QUEUED_RECHECK_SECONDS = 60      # file known to VT but its analysis is still queued
-ANALYSIS_POLL_SECONDS = 30       # after an upload
+ANALYSIS_POLL_SECONDS = 30       # after an upload, doubling up to ANALYSIS_POLL_MAX
+ANALYSIS_POLL_MAX = 120
+AUTO_UPLOADS_PER_HOUR = 10       # more unknown programs than this ask before uploading
 REQUESTS_PER_MINUTE = 4          # free public API limit
 DIRECT_UPLOAD_MAX = 32 * 1024**2  # larger files need an upload URL
 UPLOAD_MAX = 650 * 1024**2
@@ -92,7 +94,6 @@ DOCUMENT_EXT = {
     ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm", ".pot", ".potx", ".potm",
     ".odt", ".ods", ".odp", ".odg", ".pub", ".one", ".vsd", ".vsdx",
 }
-EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
 
 # Downloads still in progress: Firefox (.part), Chrome/Edge/Brave/Vivaldi
 # (.crdownload), Opera (.opdownload), Safari (.download), old Edge (.partial).

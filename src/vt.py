@@ -13,20 +13,30 @@ class RateLimiter:
         self.lock = threading.Lock()
         self.sent = collections.deque()
 
+    def _room(self, now):
+        while self.sent and self.sent[0] <= now - self.window:
+            self.sent.popleft()
+        return len(self.sent) < self.per_minute
+
     def wait(self):
         # Holding the lock while sleeping is deliberate: it serialises callers.
         with self.lock:
-            while True:
-                now = time.monotonic()
-                while self.sent and self.sent[0] <= now - self.window:
-                    self.sent.popleft()
-                if len(self.sent) < self.per_minute:
-                    break
+            while not self._room(now := time.monotonic()):
                 time.sleep(self.sent[0] + self.window - now)
             self.sent.append(now)
 
+    def take(self):
+        """Count one if the window has room; False instead of waiting."""
+        with self.lock:
+            if not self._room(now := time.monotonic()):
+                return False
+            self.sent.append(now)
+            return True
+
 
 limiter = RateLimiter(REQUESTS_PER_MINUTE)
+# A page that serves many unique programs can't spend the whole daily quota on uploads.
+auto_uploads = RateLimiter(AUTO_UPLOADS_PER_HOUR, window=3600)
 
 
 def vt(method, url, upload=None):
