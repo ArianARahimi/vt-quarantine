@@ -1059,15 +1059,6 @@ class FinishedDownloads:
         return written
 
 
-def set_up_firefox_profiles():
-    """The Firefox-family profiles set up to download into quarantine."""
-    try:
-        record = json.loads(BROWSER_SETUP.read_text())
-    except (OSError, ValueError):
-        return []
-    return [Path(e["profile"]) for e in record.get("firefox", []) if isinstance(e, dict) and "profile" in e]
-
-
 def firefox_saves(profile, since):
     """Files a Firefox-family profile recorded as downloads since `since` (epoch
     seconds). The browser keeps its history locked, so a private copy is read."""
@@ -1184,7 +1175,8 @@ class Outside:
         if not self.written:
             return []
         saves = set()
-        for profile in set_up_firefox_profiles():
+        # Every profile, not only the set-up ones: one made after setup saves too.
+        for _, profile in firefox_profiles():  # (browsers part, called at run time)
             saves |= self.profile_saves(profile)
         found = [p for p in self.written if p in saves or p.resolve() in saves]
         for path in found:
