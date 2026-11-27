@@ -75,6 +75,8 @@ OUTSIDE_SCAN_SECONDS = 2  # how often Downloads and the Desktop are looked at
 OUTSIDE_QUEUE_MAX = 50    # new files waiting there at most (an archive unpacked loose)
 MAX_EXTRA_FOLDERS = 20    # folders watched besides the standard ones
 LEARN_WINDOW = 120        # a download this recent in a newly learned folder is taken in
+HISTORY_WAIT_SECONDS = 15  # how long a file saved in one go waits for the browser's history to name it
+HISTORY_MAX = 512 * 1024**2  # a browser history bigger than this isn't copied to be read
 
 # Unknown files of these types are uploaded without asking; anything else
 # (documents, media, archives, disk images, ...) asks first, since uploads can be

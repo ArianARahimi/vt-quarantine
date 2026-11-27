@@ -994,9 +994,11 @@ def browser_save_folders(file):
 class FinishedDownloads:
     """Linux: files a browser just finished saving in the watched folders, through
     inotify: its partial file ("name.part", ".crdownload", ...) renamed to the final
-    name. Firefox-based browsers mark nothing on Linux, so this is how they're seen."""
+    name. Firefox-based browsers mark nothing on Linux, so this is how they're seen.
+    Their Save As writes straight to the final name instead: those new files are
+    noted as written, and only count once the browser's history names them."""
 
-    MOVED_FROM, MOVED_TO, IGNORED = 0x40, 0x80, 0x8000
+    CLOSE_WRITE, MOVED_FROM, MOVED_TO, CREATE, IGNORED = 0x8, 0x40, 0x80, 0x100, 0x8000
 
     def __init__(self):
         import ctypes
@@ -1007,11 +1009,14 @@ class FinishedDownloads:
         self.folders = {}  # watch descriptor -> folder
         self.partial = {}  # rename cookie -> partial name
         self.done = set()  # finished downloads not looked at yet
+        self.created = set()  # new files still being written
+        self.written = set()  # new files written in one go, not looked at yet
 
     def watch(self, folders):
         for folder in folders:
             if folder not in self.folders.values():
-                wd = self.libc.inotify_add_watch(self.fd, os.fsencode(folder), self.MOVED_FROM | self.MOVED_TO)
+                mask = self.MOVED_FROM | self.MOVED_TO | self.CREATE | self.CLOSE_WRITE
+                wd = self.libc.inotify_add_watch(self.fd, os.fsencode(folder), mask)
                 if wd >= 0:
                     self.folders[wd] = folder
 
@@ -1035,12 +1040,59 @@ class FinishedDownloads:
                     self.partial[cookie] = name
                 elif mask & self.MOVED_TO and self.partial.pop(cookie, None) is not None and outside_name(name):
                     self.done.add(folder / name)
+                elif mask & self.CREATE and outside_name(name):
+                    self.created.add(folder / name)
+                elif mask & self.CLOSE_WRITE and folder / name in self.created:
+                    self.created.discard(folder / name)
+                    self.written.add(folder / name)
             if len(self.partial) > 1000:  # renames whose other half was never seen
                 self.partial.clear()
+            if len(self.created) > 1000:  # files made but never closed after writing
+                self.created.clear()
 
     def take(self):
         done, self.done = self.done, set()
         return done
+
+    def take_written(self):
+        written, self.written = self.written, set()
+        return written
+
+
+def set_up_firefox_profiles():
+    """The Firefox-family profiles set up to download into quarantine."""
+    try:
+        record = json.loads(BROWSER_SETUP.read_text())
+    except (OSError, ValueError):
+        return []
+    return [Path(e["profile"]) for e in record.get("firefox", []) if isinstance(e, dict) and "profile" in e]
+
+
+def firefox_saves(profile, since):
+    """Files a Firefox-family profile recorded as downloads since `since` (epoch
+    seconds). The browser keeps its history locked, so a private copy is read."""
+    db = profile / "places.sqlite"
+    if not db.is_file() or db.stat().st_size > HISTORY_MAX:
+        return set()
+    import sqlite3
+    with tempfile.TemporaryDirectory(prefix="vtq-history-") as tmp:  # only this user can read it
+        for suffix in ("", "-wal"):
+            with contextlib.suppress(FileNotFoundError):
+                shutil.copyfile(f"{db}{suffix}", f"{tmp}/places.sqlite{suffix}")
+        con = sqlite3.connect(f"file:{tmp}/places.sqlite?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT a.content FROM moz_annos a JOIN moz_anno_attributes n ON n.id = a.anno_attribute_id"
+                " WHERE n.name = 'downloads/destinationFileURI' AND a.dateAdded >= ?",
+                (int(since * 1_000_000),)).fetchall()
+        finally:
+            con.close()
+    saves = set()
+    for (uri,) in rows:
+        parts = urllib.parse.urlsplit(uri if isinstance(uri, str) else "")
+        if parts.scheme == "file" and parts.netloc in ("", "localhost"):
+            saves.add(Path(urllib.parse.unquote(parts.path)))
+    return saves
 
 
 class Outside:
@@ -1053,6 +1105,8 @@ class Outside:
         self.sources = {}   # browser settings file -> its time at the last look
         self.fresh = set()  # folders learned just now: a download already in them counts
         self.finished = None
+        self.written = {}   # written in one go -> when to stop asking the history about it
+        self.history = {}   # places.sqlite -> (its state, the saves found in it)
         if not (WINDOWS or MACOS):
             try:
                 self.finished = FinishedDownloads()
@@ -1079,6 +1133,7 @@ class Outside:
                     continue
                 if path.parent in folders and size > 0:
                     found.append(path)
+            found += self.browser_saved(folders)
         seen = {}
         for folder in folders:
             try:
@@ -1118,6 +1173,50 @@ class Outside:
                 forget_released(path)
             elif path not in self.queued:
                 self.enqueue(path)
+
+    def browser_saved(self, folders):
+        """Files written in one go that the browser's history calls downloads (its
+        Save As). The history is asked for a while: it can be written a moment later."""
+        now = time.monotonic()
+        for path in self.finished.take_written():
+            self.written.setdefault(path, now + HISTORY_WAIT_SECONDS)
+        self.written = {p: until for p, until in self.written.items() if until > now and p.parent in folders}
+        if not self.written:
+            return []
+        saves = set()
+        for profile in set_up_firefox_profiles():
+            saves |= self.profile_saves(profile)
+        found = [p for p in self.written if p in saves or p.resolve() in saves]
+        for path in found:
+            del self.written[path]
+        regular = []
+        for path in found:
+            with contextlib.suppress(OSError):
+                if outside_size(os.stat(path, follow_symlinks=False)) > 0:  # no links, nothing empty
+                    regular.append(path)
+        return regular
+
+    def profile_saves(self, profile):
+        """firefox_saves of the last hour, read again only once the history has changed."""
+        db = profile / "places.sqlite"
+        state = []
+        for file in (db, profile / "places.sqlite-wal"):  # recent changes land in -wal first
+            try:
+                st = file.stat()
+                state.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                state.append(None)
+        state = tuple(state)
+        if state[0] is None:
+            return set()
+        if self.history.get(db, (None,))[0] != state:
+            try:
+                saves = firefox_saves(profile, time.time() - 3600)
+            except Exception as e:  # a history being rewritten, an old format: no saves
+                log(f"couldn't read the download history of {profile.name}: {e}")
+                saves = set()
+            self.history[db] = (state, saves)
+        return self.history[db][1]
 
     def learn(self):
         """Watch the folders the set-up browsers last saved to with Save As, or were set

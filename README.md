@@ -134,8 +134,10 @@ deleted. Files left in quarantine are unlocked, never deleted.
   locked. On Linux the first save into a new folder isn't caught. Elsewhere, use
   `vt-quarantine --scan <file or folder>`.
 - **On Linux, a download saved somewhere else is recognized by the browser's
-  partial file being renamed** (Firefox-based browsers mark nothing on Linux). A
-  download tool that writes straight to the final name isn't caught there.
+  partial file being renamed** (Firefox-based browsers mark nothing on Linux),
+  or for a Firefox-based browser's Save As, which writes the file in one go, by
+  its download history. Private windows keep no history, so their Save As isn't
+  caught, and neither is a download tool that writes straight to the final name.
 - **Taking downloads in from other folders and the settings window are new.**
   The drift notice and quiet checks were clicked through in Windows 11 and macOS
   26 VMs with VirusTotal answers simulated; on Windows the drift notice goes to
