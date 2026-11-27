@@ -33,6 +33,9 @@ esac
 gh release download "$tag" -R "$repo" -D "$work"
 cd "$work"
 rm -f SHA256SUMS.sig
+# A draft signed before carries a date line from then; it gets a new one below.
+grep -v '^# signed ' SHA256SUMS > SHA256SUMS.tmp || true
+mv SHA256SUMS.tmp SHA256SUMS
 
 # Sign only what was checked: every file matches, and nothing is left unlisted.
 sha256sum --strict -c SHA256SUMS
@@ -58,6 +61,8 @@ echo "Every file holds only what $tag makes."
 # Signed first, so the passphrase is asked for straight away instead of after minutes of
 # VirusTotal checks (a passphrase pasted early lands on the screen). The signature stays
 # here until VirusTotal has passed every file; if it doesn't, it's deleted with $work.
+# The signed date lets installed copies notice when GitHub keeps serving an old release.
+echo "# signed $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> SHA256SUMS
 echo "Signing (asks for the key's passphrase, if it has one):"
 openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
 
@@ -157,7 +162,7 @@ if bad:
 EOF
 
 # Only now, with every file clean, does the signature leave this computer.
-gh release upload "$tag" SHA256SUMS.sig -R "$repo"
+gh release upload "$tag" SHA256SUMS SHA256SUMS.sig --clobber -R "$repo"
 printf 'Publish %s now? Installed copies update to it within a day. [y/N] ' "$tag"
 read -r answer
 if [ "$answer" = y ]; then

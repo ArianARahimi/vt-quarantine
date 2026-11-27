@@ -166,6 +166,9 @@ one whose file list carries a valid signature from the release key, and only
 files that match that list. The key never leaves the maintainer's computer, so
 even someone who took over the GitHub account couldn't push an update to you.
 A first download has no such check: see **Check a download** in the README.
+Each release's signed file list also carries the date it was signed: if the
+newest release is over 6 months old, or older than the copy you have, a note
+says updates may be held back.
 
 | Installed with | How it updates |
 |---|---|

@@ -19,6 +19,10 @@ UPDATED_MARKER = DATA_DIR / "updated"
 # it's an upgrade (so the data stays), but not every Windows Installer does (Wine).
 UPDATING_MARKER = DATA_DIR / "updating"
 DECLINED_UPDATE = CONFIG_DIR / "declined-update"  # a version the user said no to
+# GitHub can't fake an update but could hold them back: a newest release signed this
+# long ago, or older than this copy, gets one warning (per release, noted here).
+STALE_RELEASE_DAYS = 180
+STALE_NOTED = CONFIG_DIR / "stale-release-noted"
 # Linux packages: pkexec runs `vt-quarantine --install-update` as root under this polkit
 # action (linux/vt-quarantine.policy), so the password prompt says what it's for.
 POLKIT_ACTION = "io.github.arianarahimi.vt-quarantine.update"
@@ -164,7 +168,10 @@ def find_update(kind, skip=None):
     asset name, verified asset bytes, release page). None if there's nothing to install."""
     release = json.loads(github_get(f"https://api.github.com/repos/{REPO}/releases/latest", 1024**2))
     version = parse_version(release.get("tag_name"))
-    if release.get("draft") or release.get("prerelease") or not version or version <= parse_version(VERSION):
+    if release.get("draft") or release.get("prerelease") or not version:
+        return None
+    if version <= parse_version(VERSION):
+        check_freshness(release, version)
         return None
     if skip and version <= skip:
         return None
@@ -188,9 +195,46 @@ def signed_sums(sums, signature, what):
         raise RuntimeError(f"the signature on {what} is not valid; not installing it")
     expected = {}
     for line in sums.decode().splitlines():
+        if line.startswith("#"):
+            continue
         digest, _, file = line.partition("  ")
         expected[file.lstrip("*")] = digest
     return expected
+
+
+def signed_date(sums):
+    """When the release was signed (the line sign-release.sh adds), or None."""
+    from datetime import datetime, timezone
+    for line in sums.decode().splitlines():
+        if line.startswith("# signed "):
+            with contextlib.suppress(ValueError):
+                return datetime.strptime(line[9:], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return None
+
+
+def check_freshness(release, version):
+    """No update: warn once if GitHub may be holding updates back."""
+    tag = release["tag_name"]
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        if STALE_NOTED.read_text() == tag:
+            return
+    if version < parse_version(VERSION):
+        why = f"GitHub shows {tag} as the newest release, older than this copy ({VERSION})."
+    else:
+        urls = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
+        if not {"SHA256SUMS", "SHA256SUMS.sig"} <= urls.keys():
+            return
+        sums = github_get(urls["SHA256SUMS"], 1024**2)
+        signed_sums(sums, github_get(urls["SHA256SUMS.sig"], 1024), f"version {tag}")
+        when = signed_date(sums)  # None: signed before releases carried a date
+        if when is None or time.time() - when.timestamp() < STALE_RELEASE_DAYS * 86400:
+            return
+        why = f"The newest release, {tag}, was signed on {when:%Y-%m-%d}."
+    log(f"updates may be held back: {why}")
+    notifier.tell("No vt-quarantine update in a long while",
+                  f"{html.escape(why)} If you expected a newer one, check composersoftware.net: "
+                  "updates may be held back on GitHub.", "dialog-warning")
+    save_file(STALE_NOTED, tag)
 
 
 def read_regular(path, limit):

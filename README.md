@@ -126,7 +126,8 @@ deleted. Files left in quarantine are unlocked, never deleted.
   detections yet. VirusTotal is one layer of protection, not a sandbox.
 - **Updates can be held back, not faked.** Someone in control of the GitHub
   repository can't sign an update, but could keep showing an old release as
-  the newest, and installed copies wouldn't notice.
+  the newest. Installed copies notice only after 6 months without a newer
+  signed release (or at once if GitHub shows an older one), and say so once.
 - **Downloads saved somewhere else are only caught in the watched folders**
   (the standard ones, folders you added and ones learned from Save As; top level
   only), and only after they're written: there's a moment before they're
