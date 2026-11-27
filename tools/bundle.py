@@ -9,6 +9,8 @@ parts before it, as if they were one file (they are, once joined).
     python3 tools/bundle.py          write vt-quarantine
     python3 tools/bundle.py --check  fail if vt-quarantine isn't what src/ makes
 """
+import ast
+import collections
 import sys
 from pathlib import Path
 
@@ -43,8 +45,17 @@ def bundle():
     return "\n\n".join(part(name) for name in PARTS)
 
 
+def duplicates(text):
+    """Functions or classes defined twice: the later part's silently replaces the first."""
+    names = collections.Counter(n.name for n in ast.parse(text).body
+                                if isinstance(n, (ast.FunctionDef, ast.ClassDef)))
+    return sorted(name for name, count in names.items() if count > 1)
+
+
 def main():
     text = bundle()
+    if twice := duplicates(text):
+        sys.exit(f"defined in more than one part: {', '.join(twice)}")
     if sys.argv[1:] == ["--check"]:
         if OUT.read_text(encoding="utf-8") != text:
             sys.exit("vt-quarantine doesn't match src/: run python3 tools/bundle.py and commit it")
