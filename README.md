@@ -83,7 +83,9 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 You want `Signature Verified Successfully` and `OK` for your file. The key's
 fingerprint (raw Ed25519) is
-`f0120310513560626fd41751cfe2e4519abe1f5f6f71a35691d16dfa48e6adac`.
+`f0120310513560626fd41751cfe2e4519abe1f5f6f71a35691d16dfa48e6adac`, also on
+[composersoftware.net](https://composersoftware.net/projects/vt-quarantine.html)
+under **Check your download**, away from GitHub.
 
 ### Browser setup
 
