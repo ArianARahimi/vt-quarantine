@@ -124,6 +124,9 @@ deleted. Files left in quarantine are unlocked, never deleted.
 
 - **A clean result isn't a guarantee.** New or targeted malware often has no
   detections yet. VirusTotal is one layer of protection, not a sandbox.
+- **Updates can be held back, not faked.** Someone in control of the GitHub
+  repository can't sign an update, but could keep showing an old release as
+  the newest, and installed copies wouldn't notice.
 - **Downloads saved somewhere else are only caught in the watched folders**
   (the standard ones, folders you added and ones learned from Save As; top level
   only), and only after they're written: there's a moment before they're
@@ -241,9 +244,10 @@ ones with Upload.
   & Extensions (the app's own copy is listed as vt-quarantine).
 - **Dragging the app to the Trash removes vt-quarantine** only if the app was
   opened from Applications (opened from Downloads, macOS runs a temporary copy).
-  Whether it was thrown away or just moved is asked of Spotlight: with Spotlight
-  turned off, moving the app to another folder counts as throwing it away.
-  Uninstall VirusTotal Quarantine always works.
+  It's removed only once Spotlight sees the app in the Trash: with Spotlight
+  turned off, or the app deleted some other way, vt-quarantine stays on.
+  Uninstall VirusTotal Quarantine always works. (This Spotlight check is new
+  and not yet tested on a real Mac.)
 </details>
 
 <details>

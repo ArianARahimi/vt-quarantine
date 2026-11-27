@@ -524,13 +524,17 @@ def remember_app_place(bundle):
 
 
 def app_copies():
-    """Where Spotlight knows the app to be (not in the Trash)."""
+    """Where Spotlight knows the app to be, the Trash included."""
     try:
         out = subprocess.run(["mdfind", f"kMDItemCFBundleIdentifier == '{APP_BUNDLE_ID}'"],
                              capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
         return []
-    return [Path(line) for line in out.splitlines() if line.endswith(".app") and "/.Trash/" not in line]
+    return [Path(line) for line in out.splitlines() if line.endswith(".app")]
+
+
+def in_trash(path):
+    return "/.Trash/" in str(path) or "/.Trashes/" in str(path)
 
 
 def kept_app():
@@ -542,22 +546,24 @@ def kept_app():
 
 
 def app_thrown_away(missing_before):
-    """One check of the kept app: True once it has been gone (and nowhere else)
-    for two checks in a row, which means it went in the Trash."""
+    """One check of the kept app: True once it has been gone for two checks in a
+    row and Spotlight sees it in the Trash. Gone without that (Spotlight off, a
+    cleanup tool) keeps protection on: Uninstall VirusTotal Quarantine still works."""
     place = kept_app()
     if place is None or place.exists():
         return False
-    moved = [copy for copy in app_copies() if copy.exists() and in_applications(copy)]
+    copies = [copy for copy in app_copies() if copy.exists()]
+    moved = [copy for copy in copies if in_applications(copy) and not in_trash(copy)]
     if moved:
         APP_PLACE.write_text(str(moved[0]))
         log(f"the app moved to {moved[0]}")
         return False
-    return missing_before
+    return missing_before and any(in_trash(copy) for copy in copies)
 
 
 def watch_app():
     """macOS, background: the app put in the Trash removes vt-quarantine."""
-    missing = False
+    missing = noted = False
     while True:
         time.sleep(60 if not missing else 120)
         try:
@@ -569,6 +575,9 @@ def watch_app():
                     uninstall(stop=False)
                 launchctl_bootout()  # last: this ends the program
                 return
+            if missing and was_missing and not noted:
+                log("the app is gone but not in the Trash: vt-quarantine stays on")
+            noted = missing and was_missing
         except Exception as e:
             log(f"app check failed: {e}")
 
